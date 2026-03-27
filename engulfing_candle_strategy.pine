@@ -1,5 +1,8 @@
 //@version=6
-strategy("Engulfing Candle Strategy + Filters", shorttitle="ENG+Filters", overlay=true, calc_on_every_tick=false, process_orders_on_close=true, initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.0, pyramiding=0)
+// Non-repainting: calc_on_every_tick=false, orders on bar close. No security() lookahead.
+// Fixed $ risk per trade (no martingale). Every trade has stop + limit (TP).
+// Prefer regular candlesticks; Heikin Ashi chart delays signals vs exchange prices.
+strategy("Engulfing Candle Strategy + Filters", shorttitle="ENG+Filters", overlay=true, calc_on_every_tick=false, process_orders_on_close=true, initial_capital=10000000000000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.0, pyramiding=0)
 
 // =============================================================================
 // INPUTS
@@ -8,33 +11,34 @@ strategy("Engulfing Candle Strategy + Filters", shorttitle="ENG+Filters", overla
 // === ENGULFING ===
 grpEng = "ENGULFING"
 is_forex = input.bool(true, "Forex pip mode", tooltip="If true, 1 pip = syminfo.mintick × 10 (typical FX). If false, 1 pip = syminfo.mintick.", group=grpEng)
-min_candle_pips = input.float(5.0, "Minimum body (pips)", minval=0.0, step=0.1, tooltip="Engulfing candle body must be at least this many pips.", group=grpEng)
+min_body_filter_enabled = input.bool(false, "Enable minimum body (pips)", tooltip="When off, body size in pips is not filtered.", group=grpEng)
+min_candle_pips = input.float(5.0, "Minimum body (pips)", minval=0.0, step=0.1, tooltip="Engulfing candle body must be at least this many pips when filter is on.", group=grpEng, active=min_body_filter_enabled)
 
 // === EMA FILTER ===
 grpEma = "EMA FILTER"
-ema_filter_enabled = input.bool(true, "Enable EMA filter", tooltip="When off, fast/slow EMA alignment is not required for signals (length inputs are disabled).", group=grpEma)
+ema_filter_enabled = input.bool(false, "Enable EMA filter", tooltip="When off, fast/slow EMA alignment is not required for signals.", group=grpEma)
 ema_fast_len = input.int(20, "Fast EMA length", minval=1, tooltip="Fast exponential moving average period.", group=grpEma, active=ema_filter_enabled)
 ema_slow_len = input.int(50, "Slow EMA length", minval=1, tooltip="Slow exponential moving average period.", group=grpEma, active=ema_filter_enabled)
 
 // === ATR FILTER ===
 grpAtr = "ATR FILTER"
-atr_filter_enabled = input.bool(true, "Enable ATR filter", tooltip="When off, candle range vs ATR is not checked (ATR inputs are disabled).", group=grpAtr)
+atr_filter_enabled = input.bool(true, "Enable ATR filter", tooltip="When off, candle range vs ATR is not checked.", group=grpAtr)
 atr_len = input.int(14, "ATR length", minval=1, tooltip="Average True Range lookback.", group=grpAtr, active=atr_filter_enabled)
-atr_multiplier = input.float(1.5, "ATR multiplier (max range)", minval=0.01, step=0.1, tooltip="Signal candle range (high−low) vs ATR × this value.", group=grpAtr, active=atr_filter_enabled)
-atr_inclusive = input.bool(false, "ATR: allow equality (≤)", tooltip="Off: range must be strictly < ATR×mult. On: range ≤ ATR×mult (matches many manual scripts).", group=grpAtr, active=atr_filter_enabled)
+atr_multiplier = input.float(1.5, "ATR multiplier (max range)", minval=0.01, step=0.1, tooltip="Pass when candle range (high−low) ≤ ATR × this value.", group=grpAtr, active=atr_filter_enabled)
 
 // === TREND BIAS ===
 grpTrend = "TREND BIAS"
-trend_filter_enabled = input.bool(true, "Enable trend bias filter", tooltip="When off, pivot HH/HL vs LH/LL bias is not required (pivot lookback is disabled).", group=grpTrend)
-trend_lookback = input.int(5, "Pivot bars to evaluate", minval=2, maxval=50, tooltip="Number of recent confirmed pivot highs/lows used for HH/HL or LH/LL bias.", group=grpTrend, active=trend_filter_enabled)
+trend_filter_enabled = input.bool(true, "Enable trend bias filter", tooltip="When off, pivot HH/HL vs LH/LL bias is not required.", group=grpTrend)
+pivot_len = input.int(3, "Bias pivot length", minval=1, maxval=50, tooltip="Left/right bars for ta.pivothigh / ta.pivotlow; bias uses last 2 highs and 2 lows.", group=grpTrend, active=trend_filter_enabled)
 
 // === SESSION FILTER ===
 grpSess = "SESSION FILTER"
-session_filter_enabled = input.bool(true, "Block 21:45–22:15 UTC", tooltip="When enabled, no new signals during this UTC window.", group=grpSess)
+session_filter_enabled = input.bool(true, "Block 22:45–23:15 UTC", tooltip="When enabled, no new signals during this UTC window.", group=grpSess)
 
 // === STRATEGY ===
 grpStrat = "STRATEGY"
-risk_usd = input.float(1.0, "Risk per trade (USD)", minval=0.01, step=0.01, tooltip="Fixed account-currency risk per trade; size is derived from stop distance and syminfo.pointvalue.", group=grpStrat)
+risk_usd = input.float(1.0, "Risk per trade (USD)", minval=0.01, step=0.01, tooltip="Fixed account-currency risk per trade; size from stop distance × syminfo.pointvalue.", group=grpStrat)
+tp_r_multiple = input.float(3.0, "Take-profit (R multiple)", minval=0.1, step=0.1, tooltip="TP distance = R × stop distance (e.g. 3 = 1:3 reward:risk). SL unchanged (engulfing wick).", group=grpStrat)
 
 // =============================================================================
 // HELPERS
@@ -43,11 +47,11 @@ risk_usd = input.float(1.0, "Risk per trade (USD)", minval=0.01, step=0.01, tool
 // Pip size: FX convention vs generic tick
 pip_size = is_forex ? syminfo.mintick * 10.0 : syminfo.mintick
 
-// Session: block 21:45 – 22:15 UTC (inclusive)
+// Session: block 22:45 – 23:15 UTC (inclusive)
 h_utc = hour(time, "UTC")
 m_utc = minute(time, "UTC")
 tod_utc = h_utc * 60 + m_utc
-session_blocked = session_filter_enabled and tod_utc >= (21 * 60 + 45) and tod_utc <= (22 * 60 + 15)
+session_blocked = session_filter_enabled and tod_utc >= (22 * 60 + 45) and tod_utc <= (23 * 60 + 15)
 
 // EMAs (plotted)
 ema_fast = ta.ema(close, ema_fast_len)
@@ -58,8 +62,7 @@ plot(ema_slow, "EMA Slow", color=color.new(color.orange, 0))
 atr_val = ta.atr(atr_len)
 
 // =============================================================================
-// ENGULFING DEFINITION (current bar vs previous)
-// Close rule: beyond prior candle BODY (not just prior open) — same idea as your script
+// ENGULFING (current bar vs previous; close clears prior BODY)
 // =============================================================================
 
 h1 = high[1]
@@ -87,94 +90,54 @@ bull_eng =
      close > prev_body_high and
      wick_ok
 
-// =============================================================================
-// FILTER 5 – MINIMUM BODY (pips)
-// =============================================================================
-
+// Minimum body (pips), optional
 body_pips = body / pip_size
 min_body_ok = body_pips >= min_candle_pips
 
-// =============================================================================
-// FILTER 4 – ATR RANGE
-// =============================================================================
-
+// ATR: pass when range ≤ ATR × mult
 candle_range = high - low
-atr_ok = not na(atr_val) and (atr_inclusive ? candle_range <= atr_multiplier * atr_val : candle_range < atr_multiplier * atr_val)
+atr_ok = not na(atr_val) and candle_range <= atr_multiplier * atr_val
 atr_pass = not atr_filter_enabled or atr_ok
-
-// =============================================================================
-// FILTER 3 – EMA
-// =============================================================================
 
 ema_buy_ok = ema_fast > ema_slow
 ema_sell_ok = ema_fast < ema_slow
 
-// =============================================================================
-// FILTER 2 – PIVOT TREND BIAS (arrays of last N pivot values, newest first)
-// =============================================================================
+// Bias: last 2 pivot highs + last 2 pivot lows (HH+HL bull, LH+LL bear)
+var float last_high1 = na
+var float last_high2 = na
+var float last_low1 = na
+var float last_low2 = na
 
-var array<float> pivot_high_vals = array.new_float(0)
-var array<float> pivot_low_vals = array.new_float(0)
-
-lb = trend_lookback
-ph = ta.pivothigh(high, lb, lb)
-pl = ta.pivotlow(low, lb, lb)
+ph = ta.pivothigh(high, pivot_len, pivot_len)
+pl = ta.pivotlow(low, pivot_len, pivot_len)
 
 if not na(ph)
-    array.unshift(pivot_high_vals, ph)
-    while array.size(pivot_high_vals) > trend_lookback
-        array.pop(pivot_high_vals)
+    last_high2 := last_high1
+    last_high1 := ph
 
 if not na(pl)
-    array.unshift(pivot_low_vals, pl)
-    while array.size(pivot_low_vals) > trend_lookback
-        array.pop(pivot_low_vals)
+    last_low2 := last_low1
+    last_low1 := pl
 
-// Newer > older => higher highs / higher lows (buy bias)
-f_strict_higher(array<float> arr) =>
-    ok = true
-    if array.size(arr) < trend_lookback
-        ok := false
-    else
-        for i = 0 to trend_lookback - 2
-            if array.get(arr, i) <= array.get(arr, i + 1)
-                ok := false
-                break
-    ok
+buy_bias = not na(last_high1) and not na(last_high2) and not na(last_low1) and not na(last_low2) and last_high1 > last_high2 and last_low1 > last_low2
+sell_bias = not na(last_high1) and not na(last_high2) and not na(last_low1) and not na(last_low2) and last_high1 < last_high2 and last_low1 < last_low2
 
-// Newer < older => lower highs / lower lows (sell bias)
-f_strict_lower(array<float> arr) =>
-    ok = true
-    if array.size(arr) < trend_lookback
-        ok := false
-    else
-        for i = 0 to trend_lookback - 2
-            if array.get(arr, i) >= array.get(arr, i + 1)
-                ok := false
-                break
-    ok
-
-buy_bias = f_strict_higher(pivot_low_vals) and f_strict_higher(pivot_high_vals)
-sell_bias = f_strict_lower(pivot_low_vals) and f_strict_lower(pivot_high_vals)
-
-// =============================================================================
-// MINIMUM BARS (pivots + ATR + EMA)
-// =============================================================================
-
-min_bars = math.max(ema_slow_len, atr_filter_enabled ? atr_len : 0, trend_filter_enabled ? (lb * 2 + 1) : 0) + 5
-bars_ok = bar_index >= min_bars and (not atr_filter_enabled or not na(atr_val))
+// bars_ok only when EMA + ATR + trend filters are all enabled
+all_core_filters_on = ema_filter_enabled and atr_filter_enabled and trend_filter_enabled
+min_bars_all = math.max(ema_slow_len, atr_len, pivot_len * 2 + 1) + 5
+bars_ok = not all_core_filters_on or (bar_index >= min_bars_all and not na(atr_val))
 
 // =============================================================================
 // COMBINED SIGNALS
 // =============================================================================
 
-filter_ok = not session_blocked and bars_ok and min_body_ok and atr_pass
+filter_ok = not session_blocked and bars_ok and (not min_body_filter_enabled or min_body_ok) and atr_pass
 
 long_setup = bull_eng and filter_ok and (not ema_filter_enabled or ema_buy_ok) and (not trend_filter_enabled or buy_bias)
 short_setup = bear_eng and filter_ok and (not ema_filter_enabled or ema_sell_ok) and (not trend_filter_enabled or sell_bias)
 
 // =============================================================================
-// POSITION SIZING ($ risk) — avoid div by zero
+// POSITION SIZING ($ risk) — fixed size from stop distance; no martingale
 // =============================================================================
 
 entry_price = close
@@ -191,21 +154,21 @@ qty_long = (sl_dist_long > tick_floor and not na(pv) and pv > 0) ? risk_usd / (s
 qty_short = (sl_dist_short > tick_floor and not na(pv) and pv > 0) ? risk_usd / (sl_dist_short * pv) : na
 
 // =============================================================================
-// ORDERS (market at engulfing close; SL/TP 1:1)
+// ORDERS — SL at engulfing wick; TP = R × stop distance (default 1:3)
 // =============================================================================
 
 if long_setup and not na(qty_long) and qty_long > 0
-    tp_long = entry_price + sl_dist_long
+    tp_long = entry_price + tp_r_multiple * sl_dist_long
     strategy.entry("Long", strategy.long, qty=qty_long)
     strategy.exit("Long X", "Long", stop=sl_long, limit=tp_long)
 
 if short_setup and not na(qty_short) and qty_short > 0
-    tp_short = entry_price - sl_dist_short
+    tp_short = entry_price - tp_r_multiple * sl_dist_short
     strategy.entry("Short", strategy.short, qty=qty_short)
     strategy.exit("Short X", "Short", stop=sl_short, limit=tp_short)
 
 // =============================================================================
-// VISUALS — barcolor, labels, box
+// VISUALS
 // =============================================================================
 
 highlight_long = long_setup
