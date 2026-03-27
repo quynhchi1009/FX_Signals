@@ -24,7 +24,8 @@ ema_slow_len = input.int(50, "Slow EMA length", minval=1, tooltip="Slow exponent
 grpAtr = "ATR FILTER"
 atr_filter_enabled = input.bool(true, "Enable ATR filter", tooltip="When off, candle range vs ATR is not checked (ATR inputs are disabled).", group=grpAtr)
 atr_len = input.int(14, "ATR length", minval=1, tooltip="Average True Range lookback.", group=grpAtr, active=atr_filter_enabled)
-atr_multiplier = input.float(1.5, "ATR multiplier (max range)", minval=0.01, step=0.1, tooltip="Signal candle range (high−low) must be below ATR × this value.", group=grpAtr, active=atr_filter_enabled)
+atr_multiplier = input.float(1.5, "ATR multiplier (max range)", minval=0.01, step=0.1, tooltip="Signal candle range (high−low) vs ATR × this value.", group=grpAtr, active=atr_filter_enabled)
+atr_inclusive = input.bool(false, "ATR: allow equality (≤)", tooltip="Off: range strictly < ATR×mult. On: range ≤ ATR×mult.", group=grpAtr, active=atr_filter_enabled)
 
 // === TREND BIAS ===
 grpTrend = "TREND BIAS"
@@ -86,10 +87,13 @@ ema_fast = ta.ema(close, ema_fast_len)
 ema_slow = ta.ema(close, ema_slow_len)
 atr_val = ta.atr(atr_len)
 
-// Engulfing definition (current bar vs previous)
-o1 = open[1]
+// Engulfing (current vs previous): wick engulfs range; close clears prior BODY high/low (your rule)
 h1 = high[1]
 l1 = low[1]
+prev_open = open[1]
+prev_close = close[1]
+prev_body_high = math.max(prev_open, prev_close)
+prev_body_low = math.min(prev_open, prev_close)
 
 body = math.abs(close - open)
 upper_wick = high - math.max(close, open)
@@ -100,13 +104,13 @@ wick_ok = body > 0 and upper_wick < body and lower_wick < body
 bear_eng =
      high >= h1 and
      low <= l1 and
-     close < o1 and
+     close < prev_body_low and
      wick_ok
 
 bull_eng =
      high >= h1 and
      low <= l1 and
-     close > o1 and
+     close > prev_body_high and
      wick_ok
 
 // Minimum body (pips)
@@ -115,7 +119,7 @@ min_body_ok = body_pips >= min_candle_pips
 
 // ATR range
 candle_range = high - low
-atr_ok = not na(atr_val) and candle_range < atr_multiplier * atr_val
+atr_ok = not na(atr_val) and (atr_inclusive ? candle_range <= atr_multiplier * atr_val : candle_range < atr_multiplier * atr_val)
 atr_pass = not atr_filter_enabled or atr_ok
 
 // EMA filter legs
