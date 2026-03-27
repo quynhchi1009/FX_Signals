@@ -13,7 +13,7 @@ Repository: [github.com/quynhchi1009/FX_Signals](https://github.com/quynhchi1009
 
 ## Requirements
 
-- [TradingView](https://www.tradingview.com/) account
+- [TradingView]([https://www.tradingview.com/](https://www.tradingview.com/pricing/?share_your_love=quynhchii1009)) account
 - Pine **version 6** (for `active=` on inputs so dependent settings gray out when a filter is off)
 - **Regular candlestick** chart recommended (not Heikin Ashi) so OHLC matches typical execution and backtests
 
