@@ -112,6 +112,18 @@ NY session **9:30–12:00** logic: 09:30–09:45 range aggregation (no `request.
 | [`casper_smc/casper_smc_strategy.pine`](casper_smc/casper_smc_strategy.pine) | Backtest: limit entry, SL/TP, one attempt per day, cancel after 12:00 NY |
 | [`casper_smc/casper_smc_indicator.pine`](casper_smc/casper_smc_indicator.pine) | Overlay: range lines (to 12:00 NY), FVG box, optional entry/SL/TP segments |
 
+### Phone / MT5 workflow (alerts)
+
+The indicator fires a TradingView **`alert()`** when a **full** BUY or SELL setup is confirmed **on bar close** (same rules as the on-chart “BUY SETUP / SELL SETUP” label). It does **not** use the `plotshape` “C1 bull” crossing trick—that was only marking candle 1 of three and is a poor alert trigger.
+
+1. Add **`casper_smc_indicator.pine`** to the chart (same symbol and timeframe you trade).
+2. In **indicator settings → Alerts**, leave **“Alert on BUY/SELL setup”** on (default).
+3. Open **Create alert**, set **Condition** to this indicator and choose **“Any alert() function call”** (wording may vary slightly by app version).
+4. Under **Notifications**, enable **App** (and optionally Sound) so your phone gets a push.
+5. The notification body includes **Limit / SL / TP** text so you can place the limit on **MetaTrader 5** manually; always double-check prices against the chart and your broker’s symbol specs (US100 vs NAS100, digits, etc.).
+
+**Note:** TradingView alerts run on TradingView’s servers when the condition is met; you do not need to keep the chart open 24/7, but you need a working alert subscription and notification permissions on your device.
+
 ---
 
 ## Disclaimers

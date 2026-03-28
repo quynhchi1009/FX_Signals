@@ -14,6 +14,7 @@ show_range = input.bool(true, "Show 9:30 Range Lines", group="Casper SMC")
 show_fvg = input.bool(true, "Show FVG Zones", group="Casper SMC")
 show_labels = input.bool(true, "Show Entry/SL/TP Labels", group="Casper SMC")
 show_limit_line = input.bool(true, "Show limit entry line (ends 12:00 NY)", group="Casper SMC")
+enable_setup_alerts = input.bool(true, "Alert on BUY/SELL setup (bar close)", group="Alerts")
 
 rr_ratio = rr_opt == "2.0" ? 2.0 : 1.5
 session_tz = "America/New_York"
@@ -109,6 +110,18 @@ short_prices_ok = risk_short > syminfo.mintick
 
 valid_long_setup = bull_fvg_setup and signal_before_noon and long_prices_ok
 valid_short_setup = bear_fvg_setup and signal_before_noon and short_prices_ok
+
+// =============================================================================
+// === ALERTS ===
+// Create alert on chart: Condition → this indicator → "Any alert() function call".
+// Enable App (and Sound/Email) in the alert so your phone gets a push notification.
+// Messages include limit / SL / TP for manual entry on MT5 (prices are hints only).
+// =============================================================================
+if enable_setup_alerts and chart_ok and valid_long_setup
+    alert("Casper SMC BUY SETUP | " + syminfo.ticker + " " + timeframe.period + " | Limit " + str.tostring(entry_long_limit, format.mintick) + " | SL " + str.tostring(sl_long, format.mintick) + " | TP " + str.tostring(tp_long, format.mintick) + " | RR " + str.tostring(rr_ratio), alert.freq_once_per_bar_close)
+
+if enable_setup_alerts and chart_ok and valid_short_setup
+    alert("Casper SMC SELL SETUP | " + syminfo.ticker + " " + timeframe.period + " | Limit " + str.tostring(entry_short_limit, format.mintick) + " | SL " + str.tostring(sl_short, format.mintick) + " | TP " + str.tostring(tp_short, format.mintick) + " | RR " + str.tostring(rr_ratio), alert.freq_once_per_bar_close)
 
 // =============================================================================
 // === VISUALS ===
