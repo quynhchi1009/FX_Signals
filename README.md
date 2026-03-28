@@ -1,30 +1,39 @@
-# FX Signals — Engulfing Strategy & Indicator
+# TradingView Pine Scripts
 
-Pine Script **v6** tools for TradingView: a **strategy** that backtests and places orders with fixed dollar risk, and a matching **indicator** for the same signals, visuals, and an optional status table.
+Pine Script **v6** projects for TradingView: an **engulfing** strategy + indicator, and a separate **Casper SMC** session/FVG toolkit.
 
 Repository: [github.com/quynhchi1009/FX_Signals](https://github.com/quynhchi1009/FX_Signals)
 
-## Files
+## Layout
+
+| Folder | Contents |
+|--------|----------|
+| [`engulfing/`](engulfing/) | Engulfing candle **strategy** and **indicator** |
+| [`casper_smc/`](casper_smc/) | Casper SMC 15m session range + FVG **strategy** and **indicator** |
+
+---
+
+## Engulfing (`engulfing/`)
 
 | File | Type | Purpose |
 |------|------|---------|
-| `engulfing_candle_strategy.pine` | Strategy | Backtesting, Strategy Tester, entries/exits with stop + limit |
-| `engulfing_candle_indicator.pine` | Indicator | Arrows, bar colors, boxes, optional SL/TP lines, filter dashboard |
+| [`engulfing/engulfing_candle_strategy.pine`](engulfing/engulfing_candle_strategy.pine) | Strategy | Backtesting, Strategy Tester, entries/exits with stop + limit |
+| [`engulfing/engulfing_candle_indicator.pine`](engulfing/engulfing_candle_indicator.pine) | Indicator | Arrows, bar colors, boxes, optional SL/TP lines, filter dashboard |
 
-## Requirements
+### Requirements
 
 - [TradingView](https://www.tradingview.com/pricing/?share_your_love=quynhchii1009) account
 - Pine **version 6** (for `active=` on inputs so dependent settings gray out when a filter is off)
 - **Regular candlestick** chart recommended (not Heikin Ashi) so OHLC matches typical execution and backtests
 
-## Quick start
+### Quick start
 
 1. Open **Pine Editor** on a chart.
-2. **New** → paste `engulfing_candle_strategy.pine` → **Save** → **Add to chart** (strategy).
-3. Optionally add **indicator**: paste `engulfing_candle_indicator.pine` → add to the same chart.
+2. **New** → paste [`engulfing/engulfing_candle_strategy.pine`](engulfing/engulfing_candle_strategy.pine) → **Save** → **Add to chart** (strategy).
+3. Optionally add **indicator**: paste [`engulfing/engulfing_candle_indicator.pine`](engulfing/engulfing_candle_indicator.pine) → add to the same chart.
 4. Open **Settings** on each script and align inputs if you want signals to match (see [Keeping strategy and indicator in sync](#keeping-strategy-and-indicator-in-sync)).
 
-## Engulfing definition
+### Engulfing definition
 
 Evaluated on the **current** bar vs the **previous** bar.
 
@@ -44,7 +53,7 @@ Evaluated on the **current** bar vs the **previous** bar.
 - `body = abs(close - open) > 0`
 - Upper wick `< body`, lower wick `< body`
 
-## Filters (all optional except where noted)
+### Filters (all optional except where noted)
 
 | Group | Default | Behavior |
 |--------|---------|----------|
@@ -55,7 +64,7 @@ Evaluated on the **current** bar vs the **previous** bar.
 | **TREND BIAS** | On | Uses `ta.pivothigh` / `ta.pivotlow` with **Bias pivot length**; keeps last **two** swing highs and **two** swing lows. Bull bias: higher high **and** higher low. Bear bias: lower high **and** lower low. |
 | **SESSION FILTER** | On | Blocks new entries when bar time (UTC) is **22:45–23:15** inclusive. |
 
-## `bars_ok` (warm-up gate)
+### `bars_ok` (warm-up gate)
 
 The minimum-bar / ATR-ready gate runs **only** when **all three** are enabled:
 
@@ -65,7 +74,7 @@ The minimum-bar / ATR-ready gate runs **only** when **all three** are enabled:
 
 If any of those is off, `bars_ok` does not block signals (no combined warm-up requirement).
 
-## Execution (strategy)
+### Execution (strategy)
 
 - **`calc_on_every_tick = false`**, **`process_orders_on_close = true`** — intended to reduce repainting vs tick-by-tick intrabar logic.
 - **Pyramiding:** 0 (one position direction at a time).
@@ -76,13 +85,13 @@ If any of those is off, `bars_ok` does not block signals (no combined warm-up re
 
 The indicator **does not** send orders. It draws signals and optional SL/TP segments; set **TP line (R multiple)** to match the strategy’s **Take-profit (R multiple)** if you want lines to align.
 
-## Indicator extras
+### Indicator extras
 
 - **DISPLAY:** SL/TP dashed lines (length in bars), filter table on/off.
 - **Boxes / labels:** capped (oldest removed) so object limits are not exceeded.
 - **Table:** session, bars OK (N/A when the three core filters are not all on), trend, EMA, ATR, min body (OFF when disabled).
 
-## Keeping strategy and indicator in sync
+### Keeping strategy and indicator in sync
 
 The strategy and indicator are **separate** scripts: each has its **own** settings. They do **not** share inputs automatically.
 
@@ -91,6 +100,19 @@ To match behavior:
 - Use the **same** symbol, timeframe, and chart type.
 - Copy the same values for: Forex pip mode, min body toggle + pips, EMA toggle + lengths, ATR toggle + length + multiplier, trend toggle + pivot length, session toggle.
 - Set indicator **TP line (R multiple)** = strategy **Take-profit (R multiple)**.
+
+---
+
+## Casper SMC (`casper_smc/`)
+
+NY session **9:30–12:00** logic: 09:30–09:45 range aggregation (no `request.security()`), FVG-style setups, limit entries. Use on **M1 / M5 / M15** only (script warns if higher).
+
+| File | Purpose |
+|------|---------|
+| [`casper_smc/casper_smc_strategy.pine`](casper_smc/casper_smc_strategy.pine) | Backtest: limit entry, SL/TP, one attempt per day, cancel after 12:00 NY |
+| [`casper_smc/casper_smc_indicator.pine`](casper_smc/casper_smc_indicator.pine) | Overlay: range lines (to 12:00 NY), FVG box, optional entry/SL/TP segments |
+
+---
 
 ## Disclaimers
 

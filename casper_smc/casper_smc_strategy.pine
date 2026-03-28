@@ -1,0 +1,269 @@
+//@version=6
+// Casper SMC 15-Minute Strategy — Strategy (backtest)
+// Version: 1.0
+// Timeframe: M1 / M5 / M15 (do not use > M15 for correct range aggregation)
+// @author: Chi
+strategy("Casper SMC 15M Strategy", overlay=true,
+     max_lines_count=100,
+     max_labels_count=50,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=0.00,
+     slippage=1,
+     pyramiding=0,
+     calc_on_every_tick=false,
+     process_orders_on_close=true)
+
+// =============================================================================
+// === INPUTS ===
+// =============================================================================
+entry_pct = input.float(50.0, "Entry % from FVG top (0=top, 100=bottom)", minval=0, maxval=100, step=5, group="Casper SMC")
+rr_opt = input.string("1.5", "Risk:Reward Ratio", options=["1.5", "2.0"], group="Casper SMC")
+show_range = input.bool(true, "Show 9:30 Range Lines", group="Casper SMC")
+show_fvg = input.bool(true, "Show FVG Zones", group="Casper SMC")
+show_labels = input.bool(true, "Show Entry/SL/TP Labels", group="Casper SMC")
+show_limit_line = input.bool(true, "Show limit entry line (ends 12:00 NY)", group="Casper SMC")
+
+rr_ratio = rr_opt == "2.0" ? 2.0 : 1.5
+session_tz = "America/New_York"
+
+// =============================================================================
+// === SHARED LOGIC ===
+// Session (America/New_York), Step 1 range 09:30–09:44:59, Step 2 FVG rules,
+// Step 3 entry/SL/TP math. Keep in sync with casper_smc_indicator.pine.
+// =============================================================================
+// --- Step 1: NY calendar day + 09:30–09:44:59 aggregation (no request.security) ---
+// =============================================================================
+ny_y = year(time, session_tz)
+ny_m = month(time, session_tz)
+ny_d = dayofmonth(time, session_tz)
+ny_day_key = ny_y * 10000 + ny_m * 100 + ny_d
+new_ny_day = ta.change(ny_day_key) != 0
+
+range_open_t = timestamp(session_tz, ny_y, ny_m, ny_d, 9, 30, 0)
+range_close_t = timestamp(session_tz, ny_y, ny_m, ny_d, 9, 44, 59)
+in_range_window = time >= range_open_t and time <= range_close_t
+
+noon_t = timestamp(session_tz, ny_y, ny_m, ny_d, 12, 0, 0)
+past_noon_close = time_close >= noon_t
+
+var float range_high = na
+var float range_low = na
+
+if new_ny_day
+    range_high := na
+    range_low := na
+
+if in_range_window
+    range_high := na(range_high) ? high : math.max(range_high, high)
+    range_low := na(range_low) ? low : math.min(range_low, low)
+
+range_locked = not in_range_window and not na(range_high) and not na(range_low)
+
+// =============================================================================
+// === SHARED LOGIC — Timeframe guard (suppress if > M15) ===
+// =============================================================================
+tf_sec = timeframe.in_seconds()
+chart_ok = not timeframe.isdwm and tf_sec <= 15 * 60
+
+// =============================================================================
+// === SHARED LOGIC — Step 2: FVG + body rules (bar close, no lookahead) ===
+// =============================================================================
+body_hi(idx) =>
+    math.max(open[idx], close[idx])
+
+body_lo(idx) =>
+    math.min(open[idx], close[idx])
+
+// Candle 1 = [2], Candle 2 = [1], Candle 3 = [0]
+c1_inside_bull = range_locked and body_lo(2) >= range_low and body_hi(2) <= range_high
+c3_outside_bull = range_locked and body_lo(0) > range_high
+c2_momo_bull = range_locked and body_hi(1) > range_high
+fvg_bull_ok = range_locked and low[0] > high[2]
+straddle_hi_bull = range_locked and high[2] < range_high and low[0] > range_high
+
+bull_fvg_setup = chart_ok and range_locked and barstate.isconfirmed and c1_inside_bull and c2_momo_bull and c3_outside_bull and fvg_bull_ok and straddle_hi_bull
+
+c1_inside_bear = range_locked and body_lo(2) >= range_low and body_hi(2) <= range_high
+c3_outside_bear = range_locked and body_hi(0) < range_low
+c2_momo_bear = range_locked and body_lo(1) < range_low
+fvg_bear_ok = range_locked and high[0] < low[2]
+straddle_lo_bear = range_locked and high[0] < range_low and low[2] > range_low
+
+bear_fvg_setup = chart_ok and range_locked and barstate.isconfirmed and c1_inside_bear and c2_momo_bear and c3_outside_bear and fvg_bear_ok and straddle_lo_bear
+
+signal_before_noon = time_close < noon_t
+
+// =============================================================================
+// === SHARED LOGIC — Step 3: Limit entry, SL (C1 wick), TP (RR) ===
+// =============================================================================
+fvg_top_bull = low[0]
+fvg_bot_bull = high[2]
+fvg_size_bull = fvg_top_bull - fvg_bot_bull
+entry_long_limit = fvg_top_bull - (fvg_size_bull * entry_pct / 100.0)
+sl_long = low[2]
+risk_long = entry_long_limit - sl_long
+
+fvg_top_bear = low[2]
+fvg_bot_bear = high[0]
+fvg_size_bear = fvg_top_bear - fvg_bot_bear
+entry_short_limit = fvg_bot_bear + (fvg_size_bear * entry_pct / 100.0)
+sl_short = high[2]
+risk_short = sl_short - entry_short_limit
+
+tp_long = entry_long_limit + risk_long * rr_ratio
+tp_short = entry_short_limit - risk_short * rr_ratio
+
+long_prices_ok = risk_long > syminfo.mintick
+short_prices_ok = risk_short > syminfo.mintick
+
+valid_long_setup = bull_fvg_setup and signal_before_noon and long_prices_ok
+valid_short_setup = bear_fvg_setup and signal_before_noon and short_prices_ok
+
+// =============================================================================
+// === EXECUTION — one limit placement per NY day; cancel unfilled after 12:00 ===
+// =============================================================================
+var bool committed_today = false
+var string pending_side = na
+var float strat_limit_px = na
+var int strat_limit_x1 = na
+
+if new_ny_day
+    committed_today := false
+    pending_side := na
+    strat_limit_px := na
+    strat_limit_x1 := na
+
+// Bar close ≥ 12:00 NY: cancel pending limits if still flat.
+if past_noon_close and strategy.position_size == 0
+    if pending_side == "long"
+        strategy.cancel("CSMC_LONG")
+        pending_side := na
+    if pending_side == "short"
+        strategy.cancel("CSMC_SHORT")
+        pending_side := na
+
+can_place = range_locked and signal_before_noon and not committed_today and strategy.position_size == 0
+
+if can_place and valid_long_setup
+    strategy.entry("CSMC_LONG", strategy.long, limit=entry_long_limit, comment="Casper SMC bull FVG limit")
+    strategy.exit("CSMC_LONG_X", "CSMC_LONG", stop=sl_long, limit=tp_long, comment_profit="TP", comment_loss="SL")
+    committed_today := true
+    pending_side := "long"
+    strat_limit_px := entry_long_limit
+    strat_limit_x1 := bar_index
+
+if can_place and valid_short_setup
+    strategy.entry("CSMC_SHORT", strategy.short, limit=entry_short_limit, comment="Casper SMC bear FVG limit")
+    strategy.exit("CSMC_SHORT_X", "CSMC_SHORT", stop=sl_short, limit=tp_short, comment_profit="TP", comment_loss="SL")
+    committed_today := true
+    pending_side := "short"
+    strat_limit_px := entry_short_limit
+    strat_limit_x1 := bar_index
+
+if strategy.position_size != 0
+    pending_side := na
+
+// =============================================================================
+// === VISUALS ===
+// Session lines use fixed [x1, x2] with extend.none (no extend.right) to avoid
+// degenerate segments that can render as a vertical stroke. x2 stops at 12:00 NY.
+// =============================================================================
+var line ln_rh = na
+var line ln_rl = na
+var line ln_lim = na
+var label lb_rh = na
+var label lb_rl = na
+var label lbl_tf = na
+var box bx_fvg = na
+var int rng_x1 = na
+var int ny_x2_cap = na
+
+if new_ny_day
+    if not na(ln_rh)
+        line.delete(ln_rh)
+    if not na(ln_rl)
+        line.delete(ln_rl)
+    if not na(ln_lim)
+        line.delete(ln_lim)
+    if not na(lb_rh)
+        label.delete(lb_rh)
+    if not na(lb_rl)
+        label.delete(lb_rl)
+    if not na(bx_fvg)
+        box.delete(bx_fvg)
+    ln_rh := na
+    ln_rl := na
+    ln_lim := na
+    lb_rh := na
+    lb_rl := na
+    bx_fvg := na
+    rng_x1 := na
+    ny_x2_cap := na
+
+if past_noon_close and na(ny_x2_cap)
+    ny_x2_cap := bar_index
+x2_right = na(ny_x2_cap) ? bar_index : ny_x2_cap
+
+if show_range and range_locked
+    if na(rng_x1)
+        rng_x1 := bar_index
+    if na(ln_rh)
+        ln_rh := line.new(rng_x1, range_high, x2_right, range_high, xloc=xloc.bar_index, extend=extend.none, color=color.new(#2196F3, 0), width=2)
+    else
+        line.set_xy1(ln_rh, rng_x1, range_high)
+        line.set_xy2(ln_rh, x2_right, range_high)
+    if na(lb_rh)
+        lb_rh := label.new(x2_right, range_high, "09:30 High", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.new(#2196F3, 0), size=size.small)
+    else
+        label.set_xy(lb_rh, x2_right, range_high)
+    if na(ln_rl)
+        ln_rl := line.new(rng_x1, range_low, x2_right, range_low, xloc=xloc.bar_index, extend=extend.none, color=color.new(#2196F3, 0), width=2)
+    else
+        line.set_xy1(ln_rl, rng_x1, range_low)
+        line.set_xy2(ln_rl, x2_right, range_low)
+    if na(lb_rl)
+        lb_rl := label.new(x2_right, range_low, "09:30 Low", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.new(#2196F3, 0), size=size.small)
+    else
+        label.set_xy(lb_rl, x2_right, range_low)
+
+if show_limit_line and not na(strat_limit_px) and not na(strat_limit_x1)
+    if na(ln_lim)
+        ln_lim := line.new(strat_limit_x1, strat_limit_px, x2_right, strat_limit_px, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dashed)
+    else
+        line.set_xy1(ln_lim, strat_limit_x1, strat_limit_px)
+        line.set_xy2(ln_lim, x2_right, strat_limit_px)
+else if not na(ln_lim)
+    line.delete(ln_lim)
+    ln_lim := na
+
+if show_fvg and barstate.isconfirmed and chart_ok
+    if valid_long_setup
+        if not na(bx_fvg)
+            box.delete(bx_fvg)
+        bx_fvg := box.new(bar_index - 2, fvg_top_bull, bar_index, fvg_bot_bull, xloc=xloc.bar_index, border_color=color.new(#00E676, 0), bgcolor=color.new(#00E676, 80), border_width=1)
+    else if valid_short_setup
+        if not na(bx_fvg)
+            box.delete(bx_fvg)
+        bx_fvg := box.new(bar_index - 2, fvg_top_bear, bar_index, fvg_bot_bear, xloc=xloc.bar_index, border_color=color.new(#FF5252, 0), bgcolor=color.new(#FF5252, 80), border_width=1)
+
+if show_labels and barstate.isconfirmed and chart_ok and (valid_long_setup or valid_short_setup)
+    sig_txt = valid_long_setup ? ("BUY SETUP | RR " + str.tostring(rr_ratio)) : ("SELL SETUP | RR " + str.tostring(rr_ratio))
+    label.new(bar_index, valid_long_setup ? low : high, sig_txt, xloc=xloc.bar_index, yloc=yloc.price, style=valid_long_setup ? label.style_label_up : label.style_label_down, textcolor=color.white, color=color.new(color.black, 40), size=size.small)
+
+plotshape(chart_ok and valid_long_setup, "C1 bull", shape.triangleup, location=location.belowbar, offset=-2, size=size.tiny, color=color.new(#00E676, 0))
+plotshape(chart_ok and valid_long_setup, "C2 bull", shape.triangleup, location=location.belowbar, offset=-1, size=size.tiny, color=color.new(#00E676, 0))
+plotshape(chart_ok and valid_long_setup, "C3 bull", shape.triangleup, location=location.belowbar, offset=0, size=size.tiny, color=color.new(#00E676, 0))
+plotshape(chart_ok and valid_short_setup, "C1 bear", shape.triangledown, location=location.abovebar, offset=-2, size=size.tiny, color=color.new(#FF5252, 0))
+plotshape(chart_ok and valid_short_setup, "C2 bear", shape.triangledown, location=location.abovebar, offset=-1, size=size.tiny, color=color.new(#FF5252, 0))
+plotshape(chart_ok and valid_short_setup, "C3 bear", shape.triangledown, location=location.abovebar, offset=0, size=size.tiny, color=color.new(#FF5252, 0))
+
+if not chart_ok and barstate.islastconfirmedhistory
+    if na(lbl_tf)
+        lbl_tf := label.new(bar_index, high, "⚠️ Apply on M1, M5, or M15 for correct range detection", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(color.orange, 20), textcolor=color.black, size=size.normal)
+    else
+        label.set_xy(lbl_tf, bar_index, high)
+else if not na(lbl_tf)
+    label.delete(lbl_tf)
+    lbl_tf := na
