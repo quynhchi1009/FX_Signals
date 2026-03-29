@@ -1,11 +1,11 @@
 //@version=6
 // Casper SMC 15-Minute Strategy — Strategy (backtest)
-// Version: 1.0
+// @version_tag: 3.0
 // Timeframe: M1 / M5 / M15 (do not use > M15 for correct range aggregation)
 // @author: Chi
 strategy("Casper SMC 15M Strategy", overlay=true,
-     max_lines_count=100,
-     max_labels_count=50,
+     max_lines_count=150,
+     max_labels_count=80,
      default_qty_type=strategy.percent_of_equity,
      default_qty_value=1,
      commission_type=strategy.commission.cash_per_contract,
@@ -17,23 +17,60 @@ strategy("Casper SMC 15M Strategy", overlay=true,
 
 // =============================================================================
 // === INPUTS ===
+// Params apply only when each filter’s Enable is on (Pine cannot hide inputs).
 // =============================================================================
-entry_pct = input.float(50.0, "Entry % from FVG top (0=top, 100=bottom)", minval=0, maxval=100, step=5, group="Casper SMC")
-rr_opt = input.string("1.5", "Risk:Reward Ratio", options=["1.5", "2.0"], group="Casper SMC")
-show_range = input.bool(true, "Show 9:30 Range Lines", group="Casper SMC")
-show_fvg = input.bool(true, "Show FVG Zones", group="Casper SMC")
-show_labels = input.bool(true, "Show Entry/SL/TP Labels", group="Casper SMC")
-show_limit_line = input.bool(true, "Show limit entry line (ends 12:00 NY)", group="Casper SMC")
+// ═══ ORB Range ═══
+show_range = input.bool(true, "Show 9:30 Range Lines", group="═══ ORB Range ═══")
+
+// ═══ FVG Detection ═══
+show_fvg = input.bool(true, "Show FVG Zones", group="═══ FVG Detection ═══")
+
+// ═══ Entry & Exit ═══
+entry_pct = input.float(50.0, "Entry % from FVG top (0=top, 100=bottom)", minval=0, maxval=100, step=5, group="═══ Entry & Exit ═══")
+rr_opt = input.string("1.5", "Risk:Reward Ratio", options=["1.5", "2.0"], group="═══ Entry & Exit ═══")
+
+// Filter 1 — EMA
+f1_active = input.bool(false, "Enable EMA Filter", group="Filter 1 — EMA", inline="f1")
+f1_show = input.bool(true, "Show on chart", group="Filter 1 — EMA", inline="f1")
+f1_fast = input.int(50, "EMA Fast", minval=1, group="Filter 1 — EMA")
+f1_slow = input.int(200, "EMA Slow", minval=1, group="Filter 1 — EMA")
+
+// Filter 2 — MACD
+f2_active = input.bool(false, "Enable MACD Filter", group="Filter 2 — MACD", inline="f2")
+f2_show = input.bool(true, "Show on chart", group="Filter 2 — MACD", inline="f2")
+f2_fast = input.int(12, "MACD Fast", minval=1, group="Filter 2 — MACD")
+f2_slow = input.int(26, "MACD Slow", minval=1, group="Filter 2 — MACD")
+f2_signal = input.int(9, "MACD Signal", minval=1, group="Filter 2 — MACD")
+
+// Filter 3 — RSI
+f3_active = input.bool(false, "Enable RSI Filter", group="Filter 3 — RSI", inline="f3")
+f3_show = input.bool(true, "Show on chart", group="Filter 3 — RSI", inline="f3")
+f3_len = input.int(21, "RSI Period", minval=1, group="Filter 3 — RSI")
+f3_mid = input.float(50, "RSI Midline", minval=30, maxval=70, group="Filter 3 — RSI")
+f3_bull_floor = input.float(40, "RSI Pullback Floor (Bull)", minval=20, maxval=60, group="Filter 3 — RSI")
+f3_bear_ceil = input.float(60, "RSI Pullback Ceiling (Bear)", minval=40, maxval=80, group="Filter 3 — RSI")
+
+// Filter 4 — ADX
+// warning: ADX confirms strength + DI direction — pair with EMA/MACD/RSI/VWAP; alone it may block all trades when ADX < threshold.
+f4_active = input.bool(false, "Enable ADX Filter", group="Filter 4 — ADX", inline="f4")
+f4_show = input.bool(true, "Show on chart", group="Filter 4 — ADX", inline="f4")
+f4_len = input.int(14, "ADX Period", minval=1, group="Filter 4 — ADX")
+f4_threshold = input.float(25, "ADX Min Threshold", minval=10, maxval=60, group="Filter 4 — ADX")
+
+// Filter 5 — VWAP
+f5_active = input.bool(false, "Enable VWAP Filter", group="Filter 5 — VWAP", inline="f5")
+f5_show = input.bool(true, "Show on chart", group="Filter 5 — VWAP", inline="f5")
+f5_anchor = input.string("Session", "VWAP Anchor Period", options=["Session", "Week", "Month"], group="Filter 5 — VWAP")
+
+// ═══ Display ═══
+show_labels = input.bool(true, "Show Entry/SL/TP Labels", group="═══ Display ═══")
+show_limit_line = input.bool(true, "Show limit entry line (ends 12:00 NY)", group="═══ Display ═══")
 
 rr_ratio = rr_opt == "2.0" ? 2.0 : 1.5
 session_tz = "America/New_York"
 
 // =============================================================================
 // === SHARED LOGIC ===
-// Session (America/New_York), Step 1 range 09:30–09:44:59, Step 2 FVG rules,
-// Step 3 entry/SL/TP math. Keep in sync with casper_smc_indicator.pine.
-// =============================================================================
-// --- Step 1: NY calendar day + 09:30–09:44:59 aggregation (no request.security) ---
 // =============================================================================
 ny_y = year(time, session_tz)
 ny_m = month(time, session_tz)
@@ -61,14 +98,68 @@ if in_range_window
 
 range_locked = not in_range_window and not na(range_high) and not na(range_low)
 
-// =============================================================================
-// === SHARED LOGIC — Timeframe guard (suppress if > M15) ===
-// =============================================================================
 tf_sec = timeframe.in_seconds()
 chart_ok = not timeframe.isdwm and tf_sec <= 15 * 60
 
+signal_before_noon = time_close < noon_t
+
 // =============================================================================
-// === SHARED LOGIC — Step 2: FVG + body rules (bar close, no lookahead) ===
+// === TREND FILTER ===
+// Legacy section marker — directional gating is in modular filters + gate below.
+// =============================================================================
+
+// =============================================================================
+// === MODULAR FILTERS ===
+// =============================================================================
+ema_fast = ta.ema(close, f1_fast)
+ema_slow = ta.ema(close, f1_slow)
+f1_long = close > ema_fast and ema_fast > ema_slow
+f1_short = close < ema_fast and ema_fast < ema_slow
+
+[macd_line, signal_line, hist] = ta.macd(close, f2_fast, f2_slow, f2_signal)
+f2_long = macd_line > 0
+f2_short = macd_line < 0
+
+rsi_val = ta.rsi(close, f3_len)
+f3_long = rsi_val >= f3_mid
+f3_short = rsi_val <= f3_mid
+f3_pullback_ok_long = rsi_val >= f3_bull_floor
+f3_pullback_ok_short = rsi_val <= f3_bear_ceil
+
+[diplus, diminus, adx_val] = ta.dmi(f4_len, f4_len)
+f4_long = adx_val >= f4_threshold and diplus > diminus
+f4_short = adx_val >= f4_threshold and diminus > diplus
+
+anchor_w = timeframe.change("W")
+anchor_m = timeframe.change("M")
+vwap_val = switch f5_anchor
+    "Week" => ta.vwap(hlc3, anchor_w)
+    "Month" => ta.vwap(hlc3, anchor_m)
+    => ta.vwap(hlc3)
+f5_long = close > vwap_val
+f5_short = close < vwap_val
+
+// =============================================================================
+// === FILTER GATE ===
+// =============================================================================
+filters_any = f1_active or f2_active or f3_active or f4_active or f5_active
+
+gate_long = (f1_active ? f1_long : true) and (f2_active ? f2_long : true) and (f3_active ? f3_long : true) and (f4_active ? f4_long : true) and (f5_active ? f5_long : true)
+
+gate_short = (f1_active ? f1_short : true) and (f2_active ? f2_short : true) and (f3_active ? f3_short : true) and (f4_active ? f4_short : true) and (f5_active ? f5_short : true)
+
+any_long_vote = (f1_active and f1_long) or (f2_active and f2_long) or (f3_active and f3_long) or (f4_active and f4_long) or (f5_active and f5_long)
+any_short_vote = (f1_active and f1_short) or (f2_active and f2_short) or (f3_active and f3_short) or (f4_active and f4_short) or (f5_active and f5_short)
+filter_conflict = filters_any and any_long_vote and any_short_vote
+
+bias_long = not filter_conflict and (not filters_any or gate_long)
+bias_short = not filter_conflict and (not filters_any or gate_short)
+
+retest_valid_long = not f3_active or f3_pullback_ok_long
+retest_valid_short = not f3_active or f3_pullback_ok_short
+
+// =============================================================================
+// === FVG DETECTION ===
 // =============================================================================
 body_hi(idx) =>
     math.max(open[idx], close[idx])
@@ -76,7 +167,6 @@ body_hi(idx) =>
 body_lo(idx) =>
     math.min(open[idx], close[idx])
 
-// Candle 1 = [2], Candle 2 = [1], Candle 3 = [0]
 c1_inside_bull = range_locked and body_lo(2) >= range_low and body_hi(2) <= range_high
 c3_outside_bull = range_locked and body_lo(0) > range_high
 c2_momo_bull = range_locked and body_hi(1) > range_high
@@ -93,10 +183,8 @@ straddle_lo_bear = range_locked and high[0] < range_low and low[2] > range_low
 
 bear_fvg_setup = chart_ok and range_locked and barstate.isconfirmed and c1_inside_bear and c2_momo_bear and c3_outside_bear and fvg_bear_ok and straddle_lo_bear
 
-signal_before_noon = time_close < noon_t
-
 // =============================================================================
-// === SHARED LOGIC — Step 3: Limit entry, SL (C1 wick), TP (RR) ===
+// === FIBONACCI ENTRY === (FVG %-based limit)
 // =============================================================================
 fvg_top_bull = low[0]
 fvg_bot_bull = high[2]
@@ -118,31 +206,55 @@ tp_short = entry_short_limit - risk_short * rr_ratio
 long_prices_ok = risk_long > syminfo.mintick
 short_prices_ok = risk_short > syminfo.mintick
 
-valid_long_setup = bull_fvg_setup and signal_before_noon and long_prices_ok
-valid_short_setup = bear_fvg_setup and signal_before_noon and short_prices_ok
+valid_long_setup = bull_fvg_setup and signal_before_noon and long_prices_ok and bias_long and retest_valid_long
+valid_short_setup = bear_fvg_setup and signal_before_noon and short_prices_ok and bias_short and retest_valid_short
 
 // =============================================================================
-// === EXECUTION — one limit placement per NY day; cancel unfilled after 12:00 ===
+// === EXECUTION ===
 // =============================================================================
 var bool committed_today = false
 var string pending_side = na
 var float strat_limit_px = na
 var int strat_limit_x1 = na
+var float strat_sl_px = na
+var float strat_tp_px = na
 
 if new_ny_day
     committed_today := false
     pending_side := na
     strat_limit_px := na
     strat_limit_x1 := na
+    strat_sl_px := na
+    strat_tp_px := na
 
-// Bar close ≥ 12:00 NY: cancel pending limits if still flat.
 if past_noon_close and strategy.position_size == 0
     if pending_side == "long"
         strategy.cancel("CSMC_LONG")
         pending_side := na
+        strat_limit_px := na
+        strat_sl_px := na
+        strat_tp_px := na
     if pending_side == "short"
         strategy.cancel("CSMC_SHORT")
         pending_side := na
+        strat_limit_px := na
+        strat_sl_px := na
+        strat_tp_px := na
+
+// Retest gate: cancel pending limit if RSI pullback invalid (Filter 3 on)
+if f3_active and strategy.position_size == 0 and barstate.isconfirmed
+    if pending_side == "long" and not retest_valid_long
+        strategy.cancel("CSMC_LONG")
+        pending_side := na
+        strat_limit_px := na
+        strat_sl_px := na
+        strat_tp_px := na
+    if pending_side == "short" and not retest_valid_short
+        strategy.cancel("CSMC_SHORT")
+        pending_side := na
+        strat_limit_px := na
+        strat_sl_px := na
+        strat_tp_px := na
 
 can_place = range_locked and signal_before_noon and not committed_today and strategy.position_size == 0
 
@@ -153,6 +265,8 @@ if can_place and valid_long_setup
     pending_side := "long"
     strat_limit_px := entry_long_limit
     strat_limit_x1 := bar_index
+    strat_sl_px := sl_long
+    strat_tp_px := tp_long
 
 if can_place and valid_short_setup
     strategy.entry("CSMC_SHORT", strategy.short, limit=entry_short_limit, comment="Casper SMC bear FVG limit")
@@ -161,20 +275,83 @@ if can_place and valid_short_setup
     pending_side := "short"
     strat_limit_px := entry_short_limit
     strat_limit_x1 := bar_index
+    strat_sl_px := sl_short
+    strat_tp_px := tp_short
 
 if strategy.position_size != 0
     pending_side := na
 
 // =============================================================================
 // === VISUALS ===
-// Session lines use fixed [x1, x2] with extend.none (no extend.right) to avoid
-// degenerate segments that can render as a vertical stroke. x2 stops at 12:00 NY.
 // =============================================================================
+plot(f1_show ? ema_fast : na, "EMA Fast", color=color.new(#FF9800, 0), linewidth=1)
+plot(f1_show ? ema_slow : na, "EMA Slow", color=color.new(#9C27B0, 0), linewidth=1)
+
+gx = ta.crossover(ema_fast, ema_slow)
+dx = ta.crossunder(ema_fast, ema_slow)
+plotshape(f1_show and gx, "GX", shape.labelup, location=location.belowbar, text="GX", size=size.tiny, color=color.new(color.green, 20), textcolor=color.white)
+plotshape(f1_show and dx, "DX", shape.labeldown, location=location.abovebar, text="DX", size=size.tiny, color=color.new(color.red, 20), textcolor=color.white)
+
+bgcolor(f2_show and f2_long ? color.new(color.green, 93) : f2_show and f2_short ? color.new(color.red, 93) : na, title="MACD tint")
+
+plot(f5_show ? vwap_val : na, "VWAP", color=color.new(#E040FB, 0), linewidth=1)
+
+var table tbl_corner = table.new(position.top_left, 2, 3, bgcolor=color.new(color.black, 85), border_width=1)
+if barstate.islast
+    table.cell(tbl_corner, 0, 0, "MACD:", text_color=color.white, text_size=size.small)
+    table.cell(tbl_corner, 1, 0, str.tostring(macd_line, "#.####"), text_color=f2_long ? color.green : f2_short ? color.red : color.gray, text_size=size.small)
+    table.cell(tbl_corner, 0, 1, "RSI(" + str.tostring(f3_len) + "):", text_color=color.white, text_size=size.small)
+    table.cell(tbl_corner, 1, 1, str.tostring(rsi_val, "#.#"), text_color=f3_long ? color.green : f3_short ? color.red : color.gray, text_size=size.small)
+    table.cell(tbl_corner, 0, 2, "ADX:", text_color=color.white, text_size=size.small)
+    table.cell(tbl_corner, 1, 2, str.tostring(adx_val, "#.#"), text_color=adx_val >= f4_threshold ? color.green : color.red, text_size=size.small)
+
+bias_label_txt = not filters_any ? "NO FILTER" : filter_conflict ? "CONFLICT" : gate_long and not gate_short ? "LONG" : gate_short and not gate_long ? "SHORT" : "CONFLICT"
+bias_bg = not filters_any ? color.gray : filter_conflict ? color.yellow : gate_long and not gate_short ? color.green : gate_short and not gate_long ? color.red : color.yellow
+
+row_bg(en, l_vote, s_vote) =>
+    not en ? color.new(color.gray, 70) : filter_conflict ? color.new(color.orange, 75) : (bias_label_txt == "LONG" and l_vote and not s_vote) or (bias_label_txt == "SHORT" and s_vote and not l_vote) ? color.new(color.green, 82) : (bias_label_txt == "LONG" and s_vote and not l_vote) or (bias_label_txt == "SHORT" and l_vote and not s_vote) ? color.new(color.red, 82) : color.new(color.gray, 85)
+
+var table tbl_dash = table.new(position.top_right, 3, 7, bgcolor=color.new(color.black, 80), border_width=1)
+if barstate.islast
+    table.cell(tbl_dash, 0, 0, "Filter", text_color=color.white, text_size=size.small)
+    table.cell(tbl_dash, 1, 0, "Long", text_color=color.white, text_size=size.small)
+    table.cell(tbl_dash, 2, 0, "Short", text_color=color.white, text_size=size.small)
+    table.cell(tbl_dash, 0, 1, "EMA", text_color=color.white, text_size=size.small, bgcolor=row_bg(f1_active, f1_long, f1_short))
+    table.cell(tbl_dash, 1, 1, f1_active ? (f1_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f1_active, f1_long, f1_short))
+    table.cell(tbl_dash, 2, 1, f1_active ? (f1_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f1_active, f1_long, f1_short))
+    table.cell(tbl_dash, 0, 2, "MACD", text_color=color.white, text_size=size.small, bgcolor=row_bg(f2_active, f2_long, f2_short))
+    table.cell(tbl_dash, 1, 2, f2_active ? (f2_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f2_active, f2_long, f2_short))
+    table.cell(tbl_dash, 2, 2, f2_active ? (f2_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f2_active, f2_long, f2_short))
+    table.cell(tbl_dash, 0, 3, "RSI(" + str.tostring(f3_len) + ")", text_color=color.white, text_size=size.small, bgcolor=row_bg(f3_active, f3_long, f3_short))
+    table.cell(tbl_dash, 1, 3, f3_active ? (f3_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f3_active, f3_long, f3_short))
+    table.cell(tbl_dash, 2, 3, f3_active ? (f3_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f3_active, f3_long, f3_short))
+    table.cell(tbl_dash, 0, 4, "ADX", text_color=color.white, text_size=size.small, bgcolor=row_bg(f4_active, f4_long, f4_short))
+    table.cell(tbl_dash, 1, 4, f4_active ? (f4_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f4_active, f4_long, f4_short))
+    table.cell(tbl_dash, 2, 4, f4_active ? (f4_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f4_active, f4_long, f4_short))
+    table.cell(tbl_dash, 0, 5, "VWAP", text_color=color.white, text_size=size.small, bgcolor=row_bg(f5_active, f5_long, f5_short))
+    table.cell(tbl_dash, 1, 5, f5_active ? (f5_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f5_active, f5_long, f5_short))
+    table.cell(tbl_dash, 2, 5, f5_active ? (f5_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f5_active, f5_long, f5_short))
+    table.cell(tbl_dash, 0, 6, "BIAS", text_color=color.white, text_size=size.small, bgcolor=color.new(bias_bg, 50))
+    table.cell(tbl_dash, 1, 6, bias_label_txt, text_color=color.black, text_size=size.small, bgcolor=color.new(bias_bg, 40))
+    table.cell(tbl_dash, 2, 6, "", bgcolor=color.new(bias_bg, 50))
+
+var label lb_vwap = na
+if f5_show
+    if na(lb_vwap)
+        lb_vwap := label.new(bar_index, vwap_val, "VWAP", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.new(#E040FB, 0), size=size.tiny)
+    else
+        label.set_xy(lb_vwap, bar_index, vwap_val)
+else if not na(lb_vwap)
+    label.delete(lb_vwap)
+    lb_vwap := na
+
 var line ln_rh = na
 var line ln_rl = na
-var line ln_lim = na
 var label lb_rh = na
 var label lb_rl = na
+var line ln_lim = na
+var line ln_sl = na
+var line ln_tp = na
 var label lbl_tf = na
 var box bx_fvg = na
 var int rng_x1 = na
@@ -185,19 +362,25 @@ if new_ny_day
         line.delete(ln_rh)
     if not na(ln_rl)
         line.delete(ln_rl)
-    if not na(ln_lim)
-        line.delete(ln_lim)
     if not na(lb_rh)
         label.delete(lb_rh)
     if not na(lb_rl)
         label.delete(lb_rl)
+    if not na(ln_lim)
+        line.delete(ln_lim)
+    if not na(ln_sl)
+        line.delete(ln_sl)
+    if not na(ln_tp)
+        line.delete(ln_tp)
     if not na(bx_fvg)
         box.delete(bx_fvg)
     ln_rh := na
     ln_rl := na
-    ln_lim := na
     lb_rh := na
     lb_rl := na
+    ln_lim := na
+    ln_sl := na
+    ln_tp := na
     bx_fvg := na
     rng_x1 := na
     ny_x2_cap := na
@@ -230,13 +413,33 @@ if show_range and range_locked
 
 if show_limit_line and not na(strat_limit_px) and not na(strat_limit_x1)
     if na(ln_lim)
-        ln_lim := line.new(strat_limit_x1, strat_limit_px, x2_right, strat_limit_px, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dashed)
+        ln_lim := line.new(strat_limit_x1, strat_limit_px, x2_right, strat_limit_px, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
     else
         line.set_xy1(ln_lim, strat_limit_x1, strat_limit_px)
         line.set_xy2(ln_lim, x2_right, strat_limit_px)
 else if not na(ln_lim)
     line.delete(ln_lim)
     ln_lim := na
+
+show_risk_lines = show_labels and not na(strat_sl_px) and not na(strat_tp_px) and not na(strat_limit_x1) and (not na(pending_side) or strategy.position_size != 0)
+if show_risk_lines
+    if na(ln_sl)
+        ln_sl := line.new(strat_limit_x1, strat_sl_px, x2_right, strat_sl_px, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.red, 0), width=1, style=line.style_dotted)
+    else
+        line.set_xy1(ln_sl, strat_limit_x1, strat_sl_px)
+        line.set_xy2(ln_sl, x2_right, strat_sl_px)
+    if na(ln_tp)
+        ln_tp := line.new(strat_limit_x1, strat_tp_px, x2_right, strat_tp_px, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.green, 0), width=1, style=line.style_dotted)
+    else
+        line.set_xy1(ln_tp, strat_limit_x1, strat_tp_px)
+        line.set_xy2(ln_tp, x2_right, strat_tp_px)
+else
+    if not na(ln_sl)
+        line.delete(ln_sl)
+        ln_sl := na
+    if not na(ln_tp)
+        line.delete(ln_tp)
+        ln_tp := na
 
 if show_fvg and barstate.isconfirmed and chart_ok
     if valid_long_setup
