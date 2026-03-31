@@ -1,458 +1,655 @@
+// ============================================================
+// @name:        Casper SMC 15M Strategy
+// @version_tag: 4.0
+// @timeframe:   M1 / M5 / M15 (recommended: M5)
+// @author:      [Your Name]
+// ============================================================
 //@version=6
-// Casper SMC 15-Minute Strategy — Indicator (overlay)
-// @version_tag: 3.0
-// Timeframe: M1 / M5 / M15 (do not use > M15 for correct range aggregation)
-// @author: Chi
-indicator("Casper SMC 15M Indicator", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=50, max_tables_count=5)
+indicator("Casper SMC 15M Strategy v4.0", overlay=true, max_lines_count=200, max_labels_count=200, max_boxes_count=100)
 
-// =============================================================================
+// ============================================================
 // === INPUTS ===
-// Params apply only when each filter’s Enable is on (Pine cannot hide inputs).
-// =============================================================================
+// ============================================================
+
 // ═══ ORB Range ═══
-show_range = input.bool(true, "Show 9:30 Range Lines", group="═══ ORB Range ═══")
+show_range = input.bool(true, "Show ORB Range Lines", group="═══ ORB Range ═══")
 
 // ═══ FVG Detection ═══
-show_fvg = input.bool(true, "Show FVG Zones", group="═══ FVG Detection ═══")
+show_fvg    = input.bool(true, "Show FVG Zones",               group="═══ FVG Detection ═══")
+show_labels = input.bool(true, "Show Entry / SL / TP Labels",  group="═══ FVG Detection ═══")
 
 // ═══ Entry & Exit ═══
-entry_pct = input.float(50.0, "Entry % from FVG top (0=top, 100=bottom)", minval=0, maxval=100, step=5, group="═══ Entry & Exit ═══")
-rr_opt = input.string("1.5", "Risk:Reward Ratio", options=["1.5", "2.0"], group="═══ Entry & Exit ═══")
+entry_fib_pct = input.float(61.8, "Entry Fib Level %", options=[50.0, 61.8], group="═══ Entry & Exit ═══")
+rr_ratio      = input.float(2.0,  "Risk:Reward Ratio", options=[1.5, 2.0, 3.0], group="═══ Entry & Exit ═══")
+use_fib_tp    = input.bool(false,  "Use Fib 127% Extension as TP",              group="═══ Entry & Exit ═══")
+
+// ═══ Filter Gate ═══
+min_filters_required = input.int(1, "Min filters required to confirm bias (X of N)",
+    minval=1, maxval=5,
+    tooltip="Signal fires when at least X enabled filters agree on direction. X is auto-clamped to the number of enabled filters. Example: 3 enabled, X=2 → fires when 2 of 3 agree.",
+    group="═══ Filter Gate ═══")
 
 // Filter 1 — EMA
-f1_active = input.bool(false, "Enable EMA Filter", group="Filter 1 — EMA", inline="f1")
-f1_show = input.bool(true, "Show on chart", group="Filter 1 — EMA", inline="f1")
-f1_fast = input.int(50, "EMA Fast", minval=1, group="Filter 1 — EMA")
-f1_slow = input.int(200, "EMA Slow", minval=1, group="Filter 1 — EMA")
+f1_active = input.bool(false, "Enable", group="Filter 1 — EMA", inline="f1h")
+f1_show   = input.bool(true,  "Show",   group="Filter 1 — EMA", inline="f1h")
+f1_fast   = input.int(50,  "EMA Fast",  group="Filter 1 — EMA", minval=1)
+f1_slow   = input.int(200, "EMA Slow",  group="Filter 1 — EMA", minval=1)
 
 // Filter 2 — MACD
-f2_active = input.bool(false, "Enable MACD Filter", group="Filter 2 — MACD", inline="f2")
-f2_show = input.bool(true, "Show on chart", group="Filter 2 — MACD", inline="f2")
-f2_fast = input.int(12, "MACD Fast", minval=1, group="Filter 2 — MACD")
-f2_slow = input.int(26, "MACD Slow", minval=1, group="Filter 2 — MACD")
-f2_signal = input.int(9, "MACD Signal", minval=1, group="Filter 2 — MACD")
+f2_active  = input.bool(false, "Enable",      group="Filter 2 — MACD", inline="f2h")
+f2_show    = input.bool(true,  "Show",        group="Filter 2 — MACD", inline="f2h")
+f2_fast    = input.int(12,    "MACD Fast",    group="Filter 2 — MACD", minval=1)
+f2_slow    = input.int(26,    "MACD Slow",    group="Filter 2 — MACD", minval=1)
+f2_signal  = input.int(9,     "MACD Signal",  group="Filter 2 — MACD", minval=1)
 
 // Filter 3 — RSI
-f3_active = input.bool(false, "Enable RSI Filter", group="Filter 3 — RSI", inline="f3")
-f3_show = input.bool(true, "Show on chart", group="Filter 3 — RSI", inline="f3")
-f3_len = input.int(21, "RSI Period", minval=1, group="Filter 3 — RSI")
-f3_mid = input.float(50, "RSI Midline", minval=30, maxval=70, group="Filter 3 — RSI")
-f3_bull_floor = input.float(40, "RSI Pullback Floor (Bull)", minval=20, maxval=60, group="Filter 3 — RSI")
-f3_bear_ceil = input.float(60, "RSI Pullback Ceiling (Bear)", minval=40, maxval=80, group="Filter 3 — RSI")
+f3_active     = input.bool(false, "Enable",                  group="Filter 3 — RSI", inline="f3h")
+f3_show       = input.bool(true,  "Show",                    group="Filter 3 — RSI", inline="f3h")
+f3_len        = input.int(21,    "RSI Period",               group="Filter 3 — RSI", minval=1)
+f3_mid        = input.float(50,  "RSI Midline",              group="Filter 3 — RSI", minval=30, maxval=70)
+f3_bull_floor = input.float(40,  "Pullback Floor (Bull)",    group="Filter 3 — RSI", minval=20, maxval=60)
+f3_bear_ceil  = input.float(60,  "Pullback Ceiling (Bear)",  group="Filter 3 — RSI", minval=40, maxval=80)
 
 // Filter 4 — ADX
-// warning: ADX confirms strength + DI direction — pair with EMA/MACD/RSI/VWAP for sensible gating; alone it may block all trades when ADX < threshold.
-f4_active = input.bool(false, "Enable ADX Filter", group="Filter 4 — ADX", inline="f4")
-f4_show = input.bool(true, "Show on chart", group="Filter 4 — ADX", inline="f4")
-f4_len = input.int(14, "ADX Period", minval=1, group="Filter 4 — ADX")
-f4_threshold = input.float(25, "ADX Min Threshold", minval=10, maxval=60, group="Filter 4 — ADX")
+f4_active    = input.bool(false, "Enable",       group="Filter 4 — ADX", inline="f4h")
+f4_show      = input.bool(true,  "Show",         group="Filter 4 — ADX", inline="f4h")
+f4_len       = input.int(14,    "ADX Period",    group="Filter 4 — ADX", minval=1)
+f4_threshold = input.float(25,  "ADX Threshold", group="Filter 4 — ADX", minval=10, maxval=60)
 
 // Filter 5 — VWAP
-f5_active = input.bool(false, "Enable VWAP Filter", group="Filter 5 — VWAP", inline="f5")
-f5_show = input.bool(true, "Show on chart", group="Filter 5 — VWAP", inline="f5")
-f5_anchor = input.string("Session", "VWAP Anchor Period", options=["Session", "Week", "Month"], group="Filter 5 — VWAP")
+f5_active = input.bool(false, "Enable",  group="Filter 5 — VWAP", inline="f5h")
+f5_show   = input.bool(true,  "Show",    group="Filter 5 — VWAP", inline="f5h")
+f5_anchor = input.string("Session", "Anchor",
+    options=["Session","Week","Month"], group="Filter 5 — VWAP")
 
 // ═══ Display ═══
-show_labels = input.bool(true, "Show Entry/SL/TP Labels", group="═══ Display ═══")
-show_limit_line = input.bool(true, "Show limit entry line (ends 12:00 NY)", group="═══ Display ═══")
-enable_setup_alerts = input.bool(true, "Alert on BUY/SELL setup (bar close)", group="═══ Display ═══")
+show_fib_levels = input.bool(true, "Show Fibonacci Levels", group="═══ Display ═══")
+show_dashboard  = input.bool(true, "Show Filter Dashboard", group="═══ Display ═══")
 
-rr_ratio = rr_opt == "2.0" ? 2.0 : 1.5
-session_tz = "America/New_York"
+// ============================================================
+// === SHARED LOGIC: ORB RANGE ===
+// ============================================================
 
-// =============================================================================
-// === SHARED LOGIC ===
-// NY session ORB: 09:30–09:44:59 aggregation (no request.security).
-// =============================================================================
-ny_y = year(time, session_tz)
-ny_m = month(time, session_tz)
-ny_d = dayofmonth(time, session_tz)
-ny_day_key = ny_y * 10000 + ny_m * 100 + ny_d
-new_ny_day = ta.change(ny_day_key) != 0
+// Timeframe guard — warn if chart TF > M15
+tf_minutes = timeframe.in_seconds() / 60
+tf_too_high = tf_minutes > 15
 
-range_open_t = timestamp(session_tz, ny_y, ny_m, ny_d, 9, 30, 0)
-range_close_t = timestamp(session_tz, ny_y, ny_m, ny_d, 9, 44, 59)
-in_range_window = time >= range_open_t and time <= range_close_t
+if tf_too_high and barstate.islastconfirmedhistory
+    label.new(bar_index, high, "⚠️ Apply on M1, M5, or M15 for correct ORB detection",
+        style=label.style_label_center, color=color.orange, textcolor=color.white, size=size.normal)
 
-noon_t = timestamp(session_tz, ny_y, ny_m, ny_d, 12, 0, 0)
+// ORB window timestamps (America/New_York)
+range_open  = timestamp("America/New_York", year, month, dayofmonth, 9, 30, 0)
+range_close = timestamp("America/New_York", year, month, dayofmonth, 9, 44, 59)
 
-var float range_high = na
-var float range_low = na
+in_orb_window = (time >= range_open) and (time <= range_close)
 
-if new_ny_day
-    range_high := na
-    range_low := na
+// Reset at each new day
+var float orb_high = na
+var float orb_low  = na
 
-if in_range_window
-    range_high := na(range_high) ? high : math.max(range_high, high)
-    range_low := na(range_low) ? low : math.min(range_low, low)
+if ta.change(dayofweek) != 0
+    orb_high := na
+    orb_low  := na
 
-range_locked = not in_range_window and not na(range_high) and not na(range_low)
+// Accumulate across all bars inside the window
+if in_orb_window and not tf_too_high
+    orb_high := na(orb_high) ? high : math.max(orb_high, high)
+    orb_low  := na(orb_low)  ? low  : math.min(orb_low,  low)
 
-tf_sec = timeframe.in_seconds()
-chart_ok = not timeframe.isdwm and tf_sec <= 15 * 60
+// Lock after window closes
+orb_locked = not in_orb_window and not na(orb_high)
 
-signal_before_noon = time_close < noon_t
-past_noon_close = time_close >= noon_t
+// Draw ORB lines — delete and redraw each session
+var line orb_high_line = na
+var line orb_low_line  = na
+var label orb_high_lbl = na
+var label orb_low_lbl  = na
+var int   last_day_orb = na
 
-// =============================================================================
-// === TREND FILTER ===
-// Legacy section marker — directional gating lives in modular filters + gate below.
-// =============================================================================
+if show_range and orb_locked and not tf_too_high
+    current_day = dayofmonth
+    if na(last_day_orb) or current_day != last_day_orb
+        // Delete old
+        if not na(orb_high_line)
+            line.delete(orb_high_line)
+        if not na(orb_low_line)
+            line.delete(orb_low_line)
+        if not na(orb_high_lbl)
+            label.delete(orb_high_lbl)
+        if not na(orb_low_lbl)
+            label.delete(orb_low_lbl)
+        // Draw new
+        orb_high_line := line.new(bar_index, orb_high, bar_index, orb_high,
+            extend=extend.right, color=#2196F3, width=2, style=line.style_solid)
+        orb_low_line  := line.new(bar_index, orb_low,  bar_index, orb_low,
+            extend=extend.right, color=#2196F3, width=2, style=line.style_solid)
+        orb_high_lbl  := label.new(bar_index, orb_high, "09:30 High",
+            style=label.style_label_right, color=#2196F3, textcolor=color.white, size=size.small)
+        orb_low_lbl   := label.new(bar_index, orb_low,  "09:30 Low",
+            style=label.style_label_right, color=#2196F3, textcolor=color.white, size=size.small)
+        last_day_orb := current_day
 
-// =============================================================================
+// ============================================================
+// === SHARED LOGIC: FVG DETECTION ===
+// ============================================================
+
+// Time filter: no signals after 12:00 EST
+cutoff = timestamp("America/New_York", year, month, dayofmonth, 12, 0, 0)
+time_ok = time < cutoff
+
+// One-signal-per-direction-per-day guards
+var bool day_bull_fired = false
+var bool day_bear_fired = false
+
+if ta.change(dayofweek) != 0
+    day_bull_fired := false
+    day_bear_fired := false
+
+// Track last 3 confirmed candles
+c1_close = close[2]
+c1_open  = open[2]
+c1_high  = high[2]
+c1_low   = low[2]
+
+c2_close = close[1]
+c2_open  = open[1]
+c2_high  = high[1]
+c2_low   = low[1]
+
+c3_close = close
+c3_open  = open
+c3_high  = high
+c3_low   = low
+
+// Bullish FVG detection (on confirmed bar)
+// Candle 1: body closes INSIDE range (close <= orb_high)
+// Candle 2: momentum candle breaks above orb_high
+// Candle 3: body closes OUTSIDE range (close > orb_high)
+// Gap: c3_low > c1_high
+fvg_bull_raw = (barstate.isconfirmed
+    and orb_locked
+    and not tf_too_high
+    and time_ok
+    and not day_bull_fired
+    and not na(orb_high)
+    and not na(orb_low)
+    and (c1_close <= orb_high)
+    and (c2_high  >  orb_high)
+    and (c3_close >  orb_high)
+    and (c3_low   >  c1_high))
+
+// Bearish FVG detection
+// Candle 1: body closes INSIDE range (close >= orb_low)
+// Candle 2: momentum candle breaks below orb_low
+// Candle 3: body closes OUTSIDE range (close < orb_low)
+// Gap: c3_high < c1_low
+fvg_bear_raw = (barstate.isconfirmed
+    and orb_locked
+    and not tf_too_high
+    and time_ok
+    and not day_bear_fired
+    and not na(orb_high)
+    and not na(orb_low)
+    and (c1_close >= orb_low)
+    and (c2_low   <  orb_low)
+    and (c3_close <  orb_low)
+    and (c3_high  <  c1_low))
+
+// FVG zone boundaries
+// Bullish
+fvg_bull_top    = c1_high
+fvg_bull_bottom = c3_low
+// Bearish
+fvg_bear_top    = c3_high
+fvg_bear_bottom = c1_low
+
+// ============================================================
 // === MODULAR FILTERS ===
-// Raw series update every bar (plots); trading gate uses them only when FVG bar is confirmed.
-// =============================================================================
+// ============================================================
+
+// --- Filter 1: Dual EMA ---
 ema_fast = ta.ema(close, f1_fast)
 ema_slow = ta.ema(close, f1_slow)
-f1_long = close > ema_fast and ema_fast > ema_slow
+
+f1_long  = close > ema_fast and ema_fast > ema_slow
 f1_short = close < ema_fast and ema_fast < ema_slow
 
-[macd_line, signal_line, hist] = ta.macd(close, f2_fast, f2_slow, f2_signal)
-f2_long = macd_line > 0
+// EMA visuals
+plot(f1_show ? ema_fast : na, "EMA Fast", color=#FF9800, linewidth=1)
+plot(f1_show ? ema_slow : na, "EMA Slow", color=#9C27B0, linewidth=1)
+
+ema_golden_cross = ta.crossover(ema_fast,  ema_slow)
+ema_death_cross  = ta.crossunder(ema_fast, ema_slow)
+
+if f1_show and ema_golden_cross
+    label.new(bar_index, low,  "GX", style=label.style_label_up,
+        color=color.green, textcolor=color.white, size=size.tiny)
+
+if f1_show and ema_death_cross
+    label.new(bar_index, high, "DX", style=label.style_label_down,
+        color=color.red,   textcolor=color.white, size=size.tiny)
+
+// --- Filter 2: MACD Zero Line ---
+[macd_line, signal_line, macd_hist] = ta.macd(close, f2_fast, f2_slow, f2_signal)
+
+f2_long  = macd_line > 0
 f2_short = macd_line < 0
 
+// MACD visuals
+bgcolor(f2_show and f2_long  ? color.new(color.green, 93) : na, title="MACD Bull BG")
+bgcolor(f2_show and f2_short ? color.new(color.red,   93) : na, title="MACD Bear BG")
+
+if f2_show and barstate.islast
+    label.new(bar_index, high,
+        "MACD: " + str.tostring(math.round(macd_line, 4)),
+        style=label.style_label_left, color=color.gray, textcolor=color.white, size=size.tiny)
+
+// --- Filter 3: RSI Momentum ---
 rsi_val = ta.rsi(close, f3_len)
-f3_long = rsi_val >= f3_mid
+
+f3_long  = rsi_val >= f3_mid
 f3_short = rsi_val <= f3_mid
-f3_pullback_ok_long = rsi_val >= f3_bull_floor
+
+f3_pullback_ok_long  = rsi_val >= f3_bull_floor
 f3_pullback_ok_short = rsi_val <= f3_bear_ceil
 
+// RSI visuals
+var label rsi_label = na
+if f3_show
+    rsi_color = f3_long ? color.green : f3_short ? color.red : color.gray
+    if not na(rsi_label)
+        label.delete(rsi_label)
+    rsi_label := label.new(bar_index, high,
+        "RSI(" + str.tostring(f3_len) + "): " + str.tostring(math.round(rsi_val, 1)),
+        style=label.style_label_left, color=rsi_color, textcolor=color.white, size=size.tiny)
+
+// --- Filter 4: ADX Trend Strength ---
+// NOTE: ADX alone cannot resolve direction — pair with at least one
+// directional filter (EMA, MACD, RSI, or VWAP) for meaningful signals
 [diplus, diminus, adx_val] = ta.dmi(f4_len, f4_len)
-f4_long = adx_val >= f4_threshold and diplus > diminus
+
+f4_long  = adx_val >= f4_threshold and diplus  > diminus
 f4_short = adx_val >= f4_threshold and diminus > diplus
 
-anchor_w = timeframe.change("W")
-anchor_m = timeframe.change("M")
+// ADX visuals
+var label adx_label = na
+if f4_show
+    adx_color = adx_val >= f4_threshold ? color.green : color.red
+    if not na(adx_label)
+        label.delete(adx_label)
+    adx_label := label.new(bar_index, high,
+        "ADX: " + str.tostring(math.round(adx_val, 1)),
+        style=label.style_label_left, color=adx_color, textcolor=color.white, size=size.tiny)
+
+// --- Filter 5: VWAP ---
 vwap_val = switch f5_anchor
-    "Week" => ta.vwap(hlc3, anchor_w)
-    "Month" => ta.vwap(hlc3, anchor_m)
-    => ta.vwap(hlc3)
-f5_long = close > vwap_val
+    "Week"  => ta.vwap(hlc3, "W")
+    "Month" => ta.vwap(hlc3, "M")
+    =>         ta.vwap(hlc3, "D")
+
+f5_long  = close > vwap_val
 f5_short = close < vwap_val
 
-// =============================================================================
-// === FILTER GATE ===
-// =============================================================================
-filters_any = f1_active or f2_active or f3_active or f4_active or f5_active
+// VWAP visuals
+plot(f5_show ? vwap_val : na, "VWAP", color=#E040FB, linewidth=1)
 
-gate_long = (f1_active ? f1_long : true) and (f2_active ? f2_long : true) and (f3_active ? f3_long : true) and (f4_active ? f4_long : true) and (f5_active ? f5_long : true)
+// ============================================================
+// === FILTER GATE (X of N) ===
+// ============================================================
 
-gate_short = (f1_active ? f1_short : true) and (f2_active ? f2_short : true) and (f3_active ? f3_short : true) and (f4_active ? f4_short : true) and (f5_active ? f5_short : true)
+// Count enabled filters
+filters_enabled = (f1_active ? 1 : 0)
+                + (f2_active ? 1 : 0)
+                + (f3_active ? 1 : 0)
+                + (f4_active ? 1 : 0)
+                + (f5_active ? 1 : 0)
 
-any_long_vote = (f1_active and f1_long) or (f2_active and f2_long) or (f3_active and f3_long) or (f4_active and f4_long) or (f5_active and f5_long)
-any_short_vote = (f1_active and f1_short) or (f2_active and f2_short) or (f3_active and f3_short) or (f4_active and f4_short) or (f5_active and f5_short)
-filter_conflict = filters_any and any_long_vote and any_short_vote
+// Count directional votes from enabled filters only
+votes_long = (f1_active and f1_long  ? 1 : 0)
+           + (f2_active and f2_long  ? 1 : 0)
+           + (f3_active and f3_long  ? 1 : 0)
+           + (f4_active and f4_long  ? 1 : 0)
+           + (f5_active and f5_long  ? 1 : 0)
 
-bias_long = not filter_conflict and (not filters_any or gate_long)
-bias_short = not filter_conflict and (not filters_any or gate_short)
+votes_short = (f1_active and f1_short ? 1 : 0)
+            + (f2_active and f2_short ? 1 : 0)
+            + (f3_active and f3_short ? 1 : 0)
+            + (f4_active and f4_short ? 1 : 0)
+            + (f5_active and f5_short ? 1 : 0)
 
-// Retest gate (RSI pullback) — only when Filter 3 enabled
-retest_valid_long = not f3_active or f3_pullback_ok_long
-retest_valid_short = not f3_active or f3_pullback_ok_short
+// Clamp X — never require more than filters_enabled
+effective_min = math.min(min_filters_required, filters_enabled)
 
-// FVG setups already require barstate.isconfirmed; bias/retest use bar close values (no lookahead).
+// INDEPENDENT evaluation — no coupling between directions
+// bias_long and bias_short can BOTH be true simultaneously — this is valid
+// Example 1: 5 active | 4 long, 1 short | X=2
+//   votes_long=4  >= 2 → bias_long=true  (buy  OPEN)
+//   votes_short=1 <  2 → bias_short=false (sell BLOCKED)
+// Example 2: 4 active | 2 long, 2 short | X=2
+//   votes_long=2  >= 2 → bias_long=true  (buy  OPEN)
+//   votes_short=2 >= 2 → bias_short=true (sell OPEN) → whichever FVG forms triggers its trade
+// Example 3: 3 active | 1 long, 2 short | X=2
+//   votes_long=1  <  2 → bias_long=false (buy  BLOCKED)
+//   votes_short=2 >= 2 → bias_short=true (sell OPEN)
+// Example 4: 0 active
+//   filters_enabled=0 → bias_long=true, bias_short=true (passthrough)
+bias_long  = filters_enabled == 0 or votes_long  >= effective_min
+bias_short = filters_enabled == 0 or votes_short >= effective_min
 
-// =============================================================================
-// === FVG DETECTION ===
-// =============================================================================
-body_hi(idx) =>
-    math.max(open[idx], close[idx])
+// ============================================================
+// === FIBONACCI ENTRY ===
+// ============================================================
 
-body_lo(idx) =>
-    math.min(open[idx], close[idx])
+// Fibonacci levels computed after FVG confirmation
+// Store confirmed FVG swing data
+var float bull_swing_low   = na
+var float bull_swing_high  = na
+var float bear_swing_high  = na
+var float bear_swing_low   = na
 
-c1_inside_bull = range_locked and body_lo(2) >= range_low and body_hi(2) <= range_high
-c3_outside_bull = range_locked and body_lo(0) > range_high
-c2_momo_bull = range_locked and body_hi(1) > range_high
-fvg_bull_ok = range_locked and low[0] > high[2]
-straddle_hi_bull = range_locked and high[2] < range_high and low[0] > range_high
+// Valid entry signals (FVG + bias + time)
+valid_long_entry  = fvg_bull_raw and bias_long
+valid_short_entry = fvg_bear_raw and bias_short
 
-bull_fvg_setup = chart_ok and range_locked and barstate.isconfirmed and c1_inside_bull and c2_momo_bull and c3_outside_bull and fvg_bull_ok and straddle_hi_bull
+// Capture swing points on valid signal
+if valid_long_entry
+    bull_swing_low  := c1_low
+    bull_swing_high := c2_high
+    day_bull_fired  := true
 
-c1_inside_bear = range_locked and body_lo(2) >= range_low and body_hi(2) <= range_high
-c3_outside_bear = range_locked and body_hi(0) < range_low
-c2_momo_bear = range_locked and body_lo(1) < range_low
-fvg_bear_ok = range_locked and high[0] < low[2]
-straddle_lo_bear = range_locked and high[0] < range_low and low[2] > range_low
+if valid_short_entry
+    bear_swing_high := c1_high
+    bear_swing_low  := c2_low
+    day_bear_fired  := true
 
-bear_fvg_setup = chart_ok and range_locked and barstate.isconfirmed and c1_inside_bear and c2_momo_bear and c3_outside_bear and fvg_bear_ok and straddle_lo_bear
+// --- Bullish Fibonacci ---
+bull_fib_range = bull_swing_high - bull_swing_low
 
-// =============================================================================
-// === FIBONACCI ENTRY === (FVG %-based limit; same math as prior versions)
-// =============================================================================
-fvg_top_bull = low[0]
-fvg_bot_bull = high[2]
-fvg_size_bull = fvg_top_bull - fvg_bot_bull
-entry_long_limit = fvg_top_bull - (fvg_size_bull * entry_pct / 100.0)
-sl_long = low[2]
-risk_long = entry_long_limit - sl_long
+bull_fib_0    = bull_swing_high
+bull_fib_50   = bull_swing_high - bull_fib_range * 0.500
+bull_fib_618  = bull_swing_high - bull_fib_range * 0.618
+bull_fib_786  = bull_swing_high - bull_fib_range * 0.786
+bull_fib_127  = bull_swing_high + bull_fib_range * 0.270
 
-fvg_top_bear = low[2]
-fvg_bot_bear = high[0]
-fvg_size_bear = fvg_top_bear - fvg_bot_bear
-entry_short_limit = fvg_bot_bear + (fvg_size_bear * entry_pct / 100.0)
-sl_short = high[2]
-risk_short = sl_short - entry_short_limit
+// Entry prices
+entry_price_long = bull_swing_high - bull_fib_range * (entry_fib_pct / 100)
 
-tp_long = entry_long_limit + risk_long * rr_ratio
-tp_short = entry_short_limit - risk_short * rr_ratio
+// SL: below fib_786 OR below candle1 wick — whichever is lower
+sl_long = math.min(bull_fib_786, c1_low) - syminfo.mintick * 2
 
-long_prices_ok = risk_long > syminfo.mintick
-short_prices_ok = risk_short > syminfo.mintick
+// TP
+tp_rr_long  = entry_price_long + (entry_price_long - sl_long) * rr_ratio
+tp_fib_long = bull_fib_127
+tp_final_long = use_fib_tp ? tp_fib_long : tp_rr_long
 
-valid_long_setup = bull_fvg_setup and signal_before_noon and long_prices_ok and bias_long and retest_valid_long
-valid_short_setup = bear_fvg_setup and signal_before_noon and short_prices_ok and bias_short and retest_valid_short
+// --- Bearish Fibonacci ---
+bear_fib_range = bear_swing_high - bear_swing_low
 
-// =============================================================================
-// === ALERTS ===
-// =============================================================================
-if enable_setup_alerts and chart_ok and valid_long_setup
-    alert("Casper SMC BUY SETUP | " + syminfo.ticker + " " + timeframe.period + " | Limit " + str.tostring(entry_long_limit, format.mintick) + " | SL " + str.tostring(sl_long, format.mintick) + " | TP " + str.tostring(tp_long, format.mintick) + " | RR " + str.tostring(rr_ratio), alert.freq_once_per_bar_close)
+bear_fib_0    = bear_swing_low
+bear_fib_50   = bear_swing_low  + bear_fib_range * 0.500
+bear_fib_618  = bear_swing_low  + bear_fib_range * 0.618
+bear_fib_786  = bear_swing_low  + bear_fib_range * 0.786
+bear_fib_127  = bear_swing_low  - bear_fib_range * 0.270
 
-if enable_setup_alerts and chart_ok and valid_short_setup
-    alert("Casper SMC SELL SETUP | " + syminfo.ticker + " " + timeframe.period + " | Limit " + str.tostring(entry_short_limit, format.mintick) + " | SL " + str.tostring(sl_short, format.mintick) + " | TP " + str.tostring(tp_short, format.mintick) + " | RR " + str.tostring(rr_ratio), alert.freq_once_per_bar_close)
+entry_price_short = bear_swing_low + bear_fib_range * (entry_fib_pct / 100)
 
-// =============================================================================
+sl_short = math.max(bear_fib_786, c1_high) + syminfo.mintick * 2
+
+tp_rr_short  = entry_price_short - (entry_price_short - sl_short) * rr_ratio
+tp_fib_short = bear_fib_127
+tp_final_short = use_fib_tp ? tp_fib_short : tp_rr_short
+
+// ============================================================
 // === VISUALS ===
-// =============================================================================
-plot(f1_show ? ema_fast : na, "EMA Fast", color=color.new(#FF9800, 0), linewidth=1)
-plot(f1_show ? ema_slow : na, "EMA Slow", color=color.new(#9C27B0, 0), linewidth=1)
+// ============================================================
 
-gx = ta.crossover(ema_fast, ema_slow)
-dx = ta.crossunder(ema_fast, ema_slow)
-plotshape(f1_show and gx, "GX", shape.labelup, location=location.belowbar, text="GX", size=size.tiny, color=color.new(color.green, 20), textcolor=color.white)
-plotshape(f1_show and dx, "DX", shape.labeldown, location=location.abovebar, text="DX", size=size.tiny, color=color.new(color.red, 20), textcolor=color.white)
+// Track session for cleanup
+var int last_session_day = na
+new_session = ta.change(dayofweek) != 0
 
-bgcolor(f2_show and f2_long ? color.new(color.green, 93) : f2_show and f2_short ? color.new(color.red, 93) : na, title="MACD tint")
+// ---- FVG Box drawing ----
+var box fvg_bull_box = na
+var box fvg_bear_box = na
 
-plot(f5_show ? vwap_val : na, "VWAP", color=color.new(#E040FB, 0), linewidth=1)
+if show_fvg and valid_long_entry
+    if not na(fvg_bull_box)
+        box.delete(fvg_bull_box)
+    fvg_bull_box := box.new(bar_index - 2, fvg_bull_top, bar_index + 20, fvg_bull_bottom,
+        border_color=color.new(#00E676, 0), bgcolor=color.new(#00E676, 80), border_width=1)
 
-var table tbl_corner = table.new(position.top_left, 2, 3, bgcolor=color.new(color.black, 85), border_width=1)
-if barstate.islast
-    table.cell(tbl_corner, 0, 0, "MACD:", text_color=color.white, text_size=size.small)
-    table.cell(tbl_corner, 1, 0, str.tostring(macd_line, "#.####"), text_color=f2_long ? color.green : f2_short ? color.red : color.gray, text_size=size.small)
-    table.cell(tbl_corner, 0, 1, "RSI(" + str.tostring(f3_len) + "):", text_color=color.white, text_size=size.small)
-    table.cell(tbl_corner, 1, 1, str.tostring(rsi_val, "#.#"), text_color=f3_long ? color.green : f3_short ? color.red : color.gray, text_size=size.small)
-    table.cell(tbl_corner, 0, 2, "ADX:", text_color=color.white, text_size=size.small)
-    adx_col = adx_val >= f4_threshold ? color.green : color.red
-    table.cell(tbl_corner, 1, 2, str.tostring(adx_val, "#.#"), text_color=adx_col, text_size=size.small)
+if show_fvg and valid_short_entry
+    if not na(fvg_bear_box)
+        box.delete(fvg_bear_box)
+    fvg_bear_box := box.new(bar_index - 2, fvg_bear_top, bar_index + 20, fvg_bear_bottom,
+        border_color=color.new(#FF5252, 0), bgcolor=color.new(#FF5252, 80), border_width=1)
 
-// VWAP text label at last bar
-var label lb_vwap = na
-if f5_show
-    if na(lb_vwap)
-        lb_vwap := label.new(bar_index, vwap_val, "VWAP", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.new(#E040FB, 0), size=size.tiny)
-    else
-        label.set_xy(lb_vwap, bar_index, vwap_val)
-else if not na(lb_vwap)
-    label.delete(lb_vwap)
-    lb_vwap := na
+// FVG candle markers (▲ below candle 3 for bull, ▼ above candle 3 for bear)
+if show_fvg and valid_long_entry
+    label.new(bar_index, low,  "▲", style=label.style_label_up,
+        color=color.new(#00E676, 60), textcolor=#00E676, size=size.small)
+if show_fvg and valid_short_entry
+    label.new(bar_index, high, "▼", style=label.style_label_down,
+        color=color.new(#FF5252, 60), textcolor=#FF5252, size=size.small)
 
-// Filter status dashboard (top-right)
-bias_label_txt = not filters_any ? "NO FILTER" : filter_conflict ? "CONFLICT" : gate_long and not gate_short ? "LONG" : gate_short and not gate_long ? "SHORT" : "CONFLICT"
-bias_bg = not filters_any ? color.gray : filter_conflict ? color.yellow : gate_long and not gate_short ? color.green : gate_short and not gate_long ? color.red : color.yellow
+// ---- Fibonacci lines (bull) ----
+var line fib_bull_50_line  = na
+var line fib_bull_618_line = na
+var line fib_bull_786_line = na
+var line fib_bull_127_line = na
+var box  fib_bull_zone_box = na
+var line fib_bull_entry_line = na
+var line fib_bull_sl_line    = na
+var line fib_bull_tp_line    = na
+var label fib_bull_entry_lbl = na
+var label fib_bull_sl_lbl    = na
+var label fib_bull_tp_lbl    = na
 
-row_bg(en, l_vote, s_vote) =>
-    row_align = not en ? color.new(color.gray, 70) : filter_conflict ? color.new(color.orange, 75) : (bias_label_txt == "LONG" and l_vote and not s_vote) or (bias_label_txt == "SHORT" and s_vote and not l_vote) ? color.new(color.green, 82) : (bias_label_txt == "LONG" and s_vote and not l_vote) or (bias_label_txt == "SHORT" and l_vote and not s_vote) ? color.new(color.red, 82) : color.new(color.gray, 85)
+if valid_long_entry
+    // Delete old
+    line.delete(fib_bull_50_line)
+    line.delete(fib_bull_618_line)
+    line.delete(fib_bull_786_line)
+    line.delete(fib_bull_127_line)
+    box.delete(fib_bull_zone_box)
+    line.delete(fib_bull_entry_line)
+    line.delete(fib_bull_sl_line)
+    line.delete(fib_bull_tp_line)
+    label.delete(fib_bull_entry_lbl)
+    label.delete(fib_bull_sl_lbl)
+    label.delete(fib_bull_tp_lbl)
 
-var table tbl_dash = table.new(position.top_right, 3, 7, bgcolor=color.new(color.black, 80), border_width=1)
-if barstate.islast
-    table.cell(tbl_dash, 0, 0, "Filter", text_color=color.white, text_size=size.small)
-    table.cell(tbl_dash, 1, 0, "Long", text_color=color.white, text_size=size.small)
-    table.cell(tbl_dash, 2, 0, "Short", text_color=color.white, text_size=size.small)
-    // EMA
-    table.cell(tbl_dash, 0, 1, "EMA", text_color=color.white, text_size=size.small, bgcolor=row_bg(f1_active, f1_long, f1_short))
-    table.cell(tbl_dash, 1, 1, f1_active ? (f1_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f1_active, f1_long, f1_short))
-    table.cell(tbl_dash, 2, 1, f1_active ? (f1_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f1_active, f1_long, f1_short))
-    // MACD
-    table.cell(tbl_dash, 0, 2, "MACD", text_color=color.white, text_size=size.small, bgcolor=row_bg(f2_active, f2_long, f2_short))
-    table.cell(tbl_dash, 1, 2, f2_active ? (f2_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f2_active, f2_long, f2_short))
-    table.cell(tbl_dash, 2, 2, f2_active ? (f2_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f2_active, f2_long, f2_short))
-    // RSI
-    table.cell(tbl_dash, 0, 3, "RSI(" + str.tostring(f3_len) + ")", text_color=color.white, text_size=size.small, bgcolor=row_bg(f3_active, f3_long, f3_short))
-    table.cell(tbl_dash, 1, 3, f3_active ? (f3_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f3_active, f3_long, f3_short))
-    table.cell(tbl_dash, 2, 3, f3_active ? (f3_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f3_active, f3_long, f3_short))
-    // ADX
-    table.cell(tbl_dash, 0, 4, "ADX", text_color=color.white, text_size=size.small, bgcolor=row_bg(f4_active, f4_long, f4_short))
-    table.cell(tbl_dash, 1, 4, f4_active ? (f4_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f4_active, f4_long, f4_short))
-    table.cell(tbl_dash, 2, 4, f4_active ? (f4_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f4_active, f4_long, f4_short))
-    // VWAP
-    table.cell(tbl_dash, 0, 5, "VWAP", text_color=color.white, text_size=size.small, bgcolor=row_bg(f5_active, f5_long, f5_short))
-    table.cell(tbl_dash, 1, 5, f5_active ? (f5_long ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f5_active, f5_long, f5_short))
-    table.cell(tbl_dash, 2, 5, f5_active ? (f5_short ? "✓" : "—") : "—", text_color=color.white, text_size=size.small, bgcolor=row_bg(f5_active, f5_long, f5_short))
-    // BIAS
-    table.cell(tbl_dash, 0, 6, "BIAS", text_color=color.white, text_size=size.small, bgcolor=color.new(bias_bg, 50))
-    table.cell(tbl_dash, 1, 6, bias_label_txt, text_color=color.black, text_size=size.small, bgcolor=color.new(bias_bg, 40))
-    table.cell(tbl_dash, 2, 6, "", bgcolor=color.new(bias_bg, 50))
+    if show_fib_levels
+        fib_bull_50_line  := line.new(bar_index, bull_fib_50,  bar_index, bull_fib_50,
+            extend=extend.right, color=#888888, style=line.style_dashed, width=1)
+        fib_bull_618_line := line.new(bar_index, bull_fib_618, bar_index, bull_fib_618,
+            extend=extend.right, color=#00BCD4, style=line.style_dashed, width=1)
+        fib_bull_786_line := line.new(bar_index, bull_fib_786, bar_index, bull_fib_786,
+            extend=extend.right, color=#FF5252, style=line.style_dashed, width=1)
+        fib_bull_127_line := line.new(bar_index, bull_fib_127, bar_index, bull_fib_127,
+            extend=extend.right, color=#69F0AE, style=line.style_dashed, width=1)
+        fib_bull_zone_box := box.new(bar_index, bull_fib_50, bar_index + 30, bull_fib_618,
+            border_color=color.new(#00BCD4, 80), bgcolor=color.new(#00BCD4, 88))
 
-var line ln_rh = na
-var line ln_rl = na
-var label lb_rh = na
-var label lb_rl = na
-var box bx_fvg = na
-var line ln_ent = na
-var line ln_sl = na
-var line ln_tp = na
-var label lb_ent = na
-var label lb_sl = na
-var label lb_tp = na
-var label lb_sig = na
-var label lbl_tf = na
-var float hold_ep = na
-var float hold_sl = na
-var float hold_tp = na
-var float hold_sig_y = na
-var bool hold_long = false
-var int setup_x1 = na
-var int rng_x1 = na
-var int ny_x2_cap = na
+        label.new(bar_index, bull_fib_50,  "50%",           style=label.style_label_right, color=#888888, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, bull_fib_618, "61.8% — Entry", style=label.style_label_right, color=#00BCD4, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, bull_fib_786, "78.6% — SL",    style=label.style_label_right, color=#FF5252, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, bull_fib_127, "127% — Ext TP", style=label.style_label_right, color=#69F0AE, textcolor=color.white, size=size.tiny)
 
-if new_ny_day
-    if not na(ln_rh)
-        line.delete(ln_rh)
-    if not na(ln_rl)
-        line.delete(ln_rl)
-    if not na(lb_rh)
-        label.delete(lb_rh)
-    if not na(lb_rl)
-        label.delete(lb_rl)
-    if not na(bx_fvg)
-        box.delete(bx_fvg)
-    if not na(ln_ent)
-        line.delete(ln_ent)
-    if not na(ln_sl)
-        line.delete(ln_sl)
-    if not na(ln_tp)
-        line.delete(ln_tp)
-    if not na(lb_ent)
-        label.delete(lb_ent)
-    if not na(lb_sl)
-        label.delete(lb_sl)
-    if not na(lb_tp)
-        label.delete(lb_tp)
-    if not na(lb_sig)
-        label.delete(lb_sig)
-    ln_rh := na
-    ln_rl := na
-    lb_rh := na
-    lb_rl := na
-    bx_fvg := na
-    ln_ent := na
-    ln_sl := na
-    ln_tp := na
-    lb_ent := na
-    lb_sl := na
-    lb_tp := na
-    lb_sig := na
-    hold_ep := na
-    hold_sl := na
-    hold_tp := na
-    hold_sig_y := na
-    setup_x1 := na
-    rng_x1 := na
-    ny_x2_cap := na
+    if show_labels
+        fib_bull_entry_line := line.new(bar_index, entry_price_long, bar_index, entry_price_long,
+            extend=extend.right, color=color.gray,  style=line.style_dashed, width=1)
+        fib_bull_sl_line    := line.new(bar_index, sl_long,          bar_index, sl_long,
+            extend=extend.right, color=#FF5252,     style=line.style_dashed, width=1)
+        fib_bull_tp_line    := line.new(bar_index, tp_final_long,    bar_index, tp_final_long,
+            extend=extend.right, color=#00E676,     style=line.style_dashed, width=1)
+        fib_bull_entry_lbl  := label.new(bar_index, entry_price_long, "Entry",
+            style=label.style_label_right, color=color.gray,  textcolor=color.white, size=size.small)
+        fib_bull_sl_lbl     := label.new(bar_index, sl_long,          "SL",
+            style=label.style_label_right, color=#FF5252,     textcolor=color.white, size=size.small)
+        fib_bull_tp_lbl     := label.new(bar_index, tp_final_long,    "TP",
+            style=label.style_label_right, color=#00E676,     textcolor=color.white, size=size.small)
 
-if past_noon_close and na(ny_x2_cap)
-    ny_x2_cap := bar_index
-x2_right = na(ny_x2_cap) ? bar_index : ny_x2_cap
+// ---- Fibonacci lines (bear) ----
+var line fib_bear_50_line  = na
+var line fib_bear_618_line = na
+var line fib_bear_786_line = na
+var line fib_bear_127_line = na
+var box  fib_bear_zone_box = na
+var line fib_bear_entry_line = na
+var line fib_bear_sl_line    = na
+var line fib_bear_tp_line    = na
 
-if show_range and range_locked
-    if na(rng_x1)
-        rng_x1 := bar_index
-    if na(ln_rh)
-        ln_rh := line.new(rng_x1, range_high, x2_right, range_high, xloc=xloc.bar_index, extend=extend.none, color=color.new(#2196F3, 0), width=2)
-    else
-        line.set_xy1(ln_rh, rng_x1, range_high)
-        line.set_xy2(ln_rh, x2_right, range_high)
-    if na(ln_rl)
-        ln_rl := line.new(rng_x1, range_low, x2_right, range_low, xloc=xloc.bar_index, extend=extend.none, color=color.new(#2196F3, 0), width=2)
-    else
-        line.set_xy1(ln_rl, rng_x1, range_low)
-        line.set_xy2(ln_rl, x2_right, range_low)
-    if na(lb_rh)
-        lb_rh := label.new(x2_right, range_high, "09:30 High", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.new(#2196F3, 0), size=size.small)
-    else
-        label.set_xy(lb_rh, x2_right, range_high)
-    if na(lb_rl)
-        lb_rl := label.new(x2_right, range_low, "09:30 Low", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.new(#2196F3, 0), size=size.small)
-    else
-        label.set_xy(lb_rl, x2_right, range_low)
+if valid_short_entry
+    line.delete(fib_bear_50_line)
+    line.delete(fib_bear_618_line)
+    line.delete(fib_bear_786_line)
+    line.delete(fib_bear_127_line)
+    box.delete(fib_bear_zone_box)
+    line.delete(fib_bear_entry_line)
+    line.delete(fib_bear_sl_line)
+    line.delete(fib_bear_tp_line)
 
-if show_fvg and barstate.isconfirmed and chart_ok
-    if valid_long_setup
-        if not na(bx_fvg)
-            box.delete(bx_fvg)
-        bx_fvg := box.new(bar_index - 2, fvg_top_bull, bar_index, fvg_bot_bull, xloc=xloc.bar_index, border_color=color.new(#00E676, 0), bgcolor=color.new(#00E676, 80), border_width=1)
-    else if valid_short_setup
-        if not na(bx_fvg)
-            box.delete(bx_fvg)
-        bx_fvg := box.new(bar_index - 2, fvg_top_bear, bar_index, fvg_bot_bear, xloc=xloc.bar_index, border_color=color.new(#FF5252, 0), bgcolor=color.new(#FF5252, 80), border_width=1)
+    if show_fib_levels
+        fib_bear_50_line  := line.new(bar_index, bear_fib_50,  bar_index, bear_fib_50,
+            extend=extend.right, color=#888888, style=line.style_dashed, width=1)
+        fib_bear_618_line := line.new(bar_index, bear_fib_618, bar_index, bear_fib_618,
+            extend=extend.right, color=#00BCD4, style=line.style_dashed, width=1)
+        fib_bear_786_line := line.new(bar_index, bear_fib_786, bar_index, bear_fib_786,
+            extend=extend.right, color=#FF5252, style=line.style_dashed, width=1)
+        fib_bear_127_line := line.new(bar_index, bear_fib_127, bear_index, bear_fib_127,
+            extend=extend.right, color=#69F0AE, style=line.style_dashed, width=1)
+        fib_bear_zone_box := box.new(bar_index, bear_fib_618, bar_index + 30, bear_fib_50,
+            border_color=color.new(#00BCD4, 80), bgcolor=color.new(#00BCD4, 88))
 
-if show_labels and barstate.isconfirmed and chart_ok and (valid_long_setup or valid_short_setup)
-    ep = valid_long_setup ? entry_long_limit : entry_short_limit
-    sp = valid_long_setup ? sl_long : sl_short
-    tp = valid_long_setup ? tp_long : tp_short
-    hold_ep := ep
-    hold_sl := sp
-    hold_tp := tp
-    hold_long := valid_long_setup
-    hold_sig_y := valid_long_setup ? low : high
-    setup_x1 := bar_index
-    if not na(ln_ent)
-        line.delete(ln_ent)
-    if not na(ln_sl)
-        line.delete(ln_sl)
-    if not na(ln_tp)
-        line.delete(ln_tp)
-    if not na(lb_ent)
-        label.delete(lb_ent)
-    if not na(lb_sl)
-        label.delete(lb_sl)
-    if not na(lb_tp)
-        label.delete(lb_tp)
-    if not na(lb_sig)
-        label.delete(lb_sig)
-    ln_ent := na
-    if show_limit_line
-        ln_ent := line.new(setup_x1, ep, x2_right, ep, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
-    ln_sl := line.new(setup_x1, sp, x2_right, sp, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.red, 0), width=1, style=line.style_dotted)
-    ln_tp := line.new(setup_x1, tp, x2_right, tp, xloc=xloc.bar_index, extend=extend.none, color=color.new(color.green, 0), width=1, style=line.style_dotted)
-    lb_ent := na
-    if show_limit_line
-        lb_ent := label.new(x2_right, ep, "Entry", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.gray, size=size.tiny)
-    lb_sl := label.new(x2_right, sp, "SL", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.red, size=size.tiny)
-    lb_tp := label.new(x2_right, tp, "TP", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_none, textcolor=color.green, size=size.tiny)
-    sig_txt = valid_long_setup ? ("BUY SETUP | RR " + str.tostring(rr_ratio)) : ("SELL SETUP | RR " + str.tostring(rr_ratio))
-    lb_sig := label.new(bar_index, valid_long_setup ? low : high, sig_txt, xloc=xloc.bar_index, yloc=yloc.price, style=valid_long_setup ? label.style_label_up : label.style_label_down, textcolor=color.white, color=color.new(color.black, 40), size=size.small)
-else if show_labels and not na(hold_ep) and not na(setup_x1) and not na(ln_sl)
-    if not na(ln_ent)
-        line.set_xy1(ln_ent, setup_x1, hold_ep)
-        line.set_xy2(ln_ent, x2_right, hold_ep)
-    line.set_xy1(ln_sl, setup_x1, hold_sl)
-    line.set_xy2(ln_sl, x2_right, hold_sl)
-    line.set_xy1(ln_tp, setup_x1, hold_tp)
-    line.set_xy2(ln_tp, x2_right, hold_tp)
-    if not na(lb_ent)
-        label.set_xy(lb_ent, x2_right, hold_ep)
-    label.set_xy(lb_sl, x2_right, hold_sl)
-    label.set_xy(lb_tp, x2_right, hold_tp)
-    if not na(lb_sig) and not na(hold_sig_y)
-        label.set_xy(lb_sig, setup_x1, hold_sig_y)
+        label.new(bar_index, bear_fib_50,  "50%",           style=label.style_label_right, color=#888888, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, bear_fib_618, "61.8% — Entry", style=label.style_label_right, color=#00BCD4, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, bear_fib_786, "78.6% — SL",    style=label.style_label_right, color=#FF5252, textcolor=color.white, size=size.tiny)
+        label.new(bar_index, bear_fib_127, "127% — Ext TP", style=label.style_label_right, color=#69F0AE, textcolor=color.white, size=size.tiny)
 
-plotshape(chart_ok and valid_long_setup, "C1 bull", shape.triangleup, location=location.belowbar, offset=-2, size=size.tiny, color=color.new(#00E676, 0))
-plotshape(chart_ok and valid_long_setup, "C2 bull", shape.triangleup, location=location.belowbar, offset=-1, size=size.tiny, color=color.new(#00E676, 0))
-plotshape(chart_ok and valid_long_setup, "C3 bull", shape.triangleup, location=location.belowbar, offset=0, size=size.tiny, color=color.new(#00E676, 0))
-plotshape(chart_ok and valid_short_setup, "C1 bear", shape.triangledown, location=location.abovebar, offset=-2, size=size.tiny, color=color.new(#FF5252, 0))
-plotshape(chart_ok and valid_short_setup, "C2 bear", shape.triangledown, location=location.abovebar, offset=-1, size=size.tiny, color=color.new(#FF5252, 0))
-plotshape(chart_ok and valid_short_setup, "C3 bear", shape.triangledown, location=location.abovebar, offset=0, size=size.tiny, color=color.new(#FF5252, 0))
+    if show_labels
+        fib_bear_entry_line := line.new(bar_index, entry_price_short, bar_index, entry_price_short,
+            extend=extend.right, color=color.gray,  style=line.style_dashed, width=1)
+        fib_bear_sl_line    := line.new(bar_index, sl_short,          bar_index, sl_short,
+            extend=extend.right, color=#FF5252,     style=line.style_dashed, width=1)
+        fib_bear_tp_line    := line.new(bar_index, tp_final_short,    bar_index, tp_final_short,
+            extend=extend.right, color=#00E676,     style=line.style_dashed, width=1)
+        label.new(bar_index, entry_price_short, "Entry", style=label.style_label_right, color=color.gray,  textcolor=color.white, size=size.small)
+        label.new(bar_index, sl_short,          "SL",    style=label.style_label_right, color=#FF5252,     textcolor=color.white, size=size.small)
+        label.new(bar_index, tp_final_short,    "TP",    style=label.style_label_right, color=#00E676,     textcolor=color.white, size=size.small)
 
-if not chart_ok and barstate.islastconfirmedhistory
-    if na(lbl_tf)
-        lbl_tf := label.new(bar_index, high, "⚠️ Apply on M1, M5, or M15 for correct range detection", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(color.orange, 20), textcolor=color.black, size=size.normal)
-    else
-        label.set_xy(lbl_tf, bar_index, high)
-else if not na(lbl_tf)
-    label.delete(lbl_tf)
-    lbl_tf := na
+// ---- Filter Status Dashboard ----
+// Layout:
+// ┌──────────────────┬────────┬────────┐
+// │ Filter           │  Long  │ Short  │
+// ├──────────────────┼────────┼────────┤
+// │ EMA              │   ✓    │        │
+// │ MACD             │   ✓    │        │
+// │ RSI(21)          │        │   ✓    │
+// │ ADX              │   ✓    │   ✓    │
+// │ VWAP             │   —    │   —    │
+// ├──────────────────┼────────┼────────┤
+// │ Votes            │ vL/vS  │        │
+// │ Required (X/N)   │ eM/fE  │        │
+// │ Bias Long        │ OPEN   │        │
+// │ Bias Short       │        │ OPEN   │
+// └──────────────────┴────────┴────────┘
+
+var table dash = na
+
+c_header  = color.new(color.gray,  20)
+c_green   = color.new(color.green, 20)
+c_red     = color.new(color.red,   20)
+c_dark    = color.new(#1E1E2E,     0)
+c_dim     = color.new(color.gray,  60)
+c_txt_w   = color.white
+c_txt_g   = color.new(color.gray, 30)
+
+if show_dashboard
+    if na(dash)
+        dash := table.new(position.top_right, 3, 11,
+            border_color=color.gray, border_width=1, frame_color=color.gray, frame_width=1)
+
+    // Header row
+    table.cell(dash, 0, 0, "Filter",    bgcolor=c_header, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 0, "Long",      bgcolor=c_header, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 0, "Short",     bgcolor=c_header, text_color=c_txt_w, text_size=size.small)
+
+    // Helper: filter row
+    _filter_cell(col, active, votes) =>
+        if not active
+            [c_dim, "—"]
+        else if votes
+            [c_green, "✓"]
+        else
+            [c_dark, "✗"]
+
+    // Filter 1 — EMA
+    [f1l_c, f1l_t] = _filter_cell(1, f1_active, f1_long)
+    [f1s_c, f1s_t] = _filter_cell(2, f1_active, f1_short)
+    table.cell(dash, 0, 1, "EMA",  bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 1, f1l_t, bgcolor=f1l_c,  text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 1, f1s_t, bgcolor=f1s_c,  text_color=c_txt_w, text_size=size.small)
+
+    // Filter 2 — MACD
+    [f2l_c, f2l_t] = _filter_cell(1, f2_active, f2_long)
+    [f2s_c, f2s_t] = _filter_cell(2, f2_active, f2_short)
+    table.cell(dash, 0, 2, "MACD", bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 2, f2l_t, bgcolor=f2l_c,  text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 2, f2s_t, bgcolor=f2s_c,  text_color=c_txt_w, text_size=size.small)
+
+    // Filter 3 — RSI
+    [f3l_c, f3l_t] = _filter_cell(1, f3_active, f3_long)
+    [f3s_c, f3s_t] = _filter_cell(2, f3_active, f3_short)
+    table.cell(dash, 0, 3, "RSI(" + str.tostring(f3_len) + ")", bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 3, f3l_t, bgcolor=f3l_c,  text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 3, f3s_t, bgcolor=f3s_c,  text_color=c_txt_w, text_size=size.small)
+
+    // Filter 4 — ADX
+    [f4l_c, f4l_t] = _filter_cell(1, f4_active, f4_long)
+    [f4s_c, f4s_t] = _filter_cell(2, f4_active, f4_short)
+    table.cell(dash, 0, 4, "ADX",  bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 4, f4l_t, bgcolor=f4l_c,  text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 4, f4s_t, bgcolor=f4s_c,  text_color=c_txt_w, text_size=size.small)
+
+    // Filter 5 — VWAP
+    [f5l_c, f5l_t] = _filter_cell(1, f5_active, f5_long)
+    [f5s_c, f5s_t] = _filter_cell(2, f5_active, f5_short)
+    table.cell(dash, 0, 5, "VWAP", bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 5, f5l_t, bgcolor=f5l_c,  text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 5, f5s_t, bgcolor=f5s_c,  text_color=c_txt_w, text_size=size.small)
+
+    // Separator row
+    table.cell(dash, 0, 6, "─────────────────", bgcolor=c_header, text_color=c_txt_g, text_size=size.tiny)
+    table.cell(dash, 1, 6, "─────",             bgcolor=c_header, text_color=c_txt_g, text_size=size.tiny)
+    table.cell(dash, 2, 6, "─────",             bgcolor=c_header, text_color=c_txt_g, text_size=size.tiny)
+
+    // Votes row
+    table.cell(dash, 0, 7, "Votes",
+        bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 7, str.tostring(votes_long),
+        bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 7, str.tostring(votes_short),
+        bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+
+    // Required X/N row
+    table.cell(dash, 0, 8, "Required (X/N)",
+        bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 8, str.tostring(effective_min) + "/" + str.tostring(filters_enabled),
+        bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 8, str.tostring(effective_min) + "/" + str.tostring(filters_enabled),
+        bgcolor=c_dark, text_color=c_txt_w, text_size=size.small)
+
+    // Bias Long row
+    bias_long_txt   = filters_enabled == 0 ? "NO FILTER" : bias_long  ? "✓ OPEN" : "✗ BLOCKED"
+    bias_long_color = filters_enabled == 0 ? c_dim       : bias_long  ? c_green  : c_dim
+    table.cell(dash, 0, 9,  "Bias Long",    bgcolor=c_dark,       text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 9,  bias_long_txt,  bgcolor=bias_long_color, text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 9,  "",             bgcolor=c_dark,       text_color=c_txt_w, text_size=size.small)
+
+    // Bias Short row
+    bias_short_txt   = filters_enabled == 0 ? "NO FILTER" : bias_short  ? "✓ OPEN" : "✗ BLOCKED"
+    bias_short_color = filters_enabled == 0 ? c_dim        : bias_short  ? c_red   : c_dim
+    table.cell(dash, 0, 10, "Bias Short",    bgcolor=c_dark,        text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 1, 10, "",              bgcolor=c_dark,        text_color=c_txt_w, text_size=size.small)
+    table.cell(dash, 2, 10, bias_short_txt,  bgcolor=bias_short_color, text_color=c_txt_w, text_size=size.small)
