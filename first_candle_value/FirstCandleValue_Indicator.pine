@@ -1,0 +1,326 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════
+// First Candle Value Area — INDICATOR (Pine v6)
+// Session opening range + ~70% volume value area (LTF reconstruction), signals,
+// non-repainting (confirmed bars only, lookahead off on security calls).
+// ══════════════════════════════════════════════════════════════════════════════
+indicator("First Candle Value [Indicator]",
+     overlay              = true,
+     max_lines_count      = 500,
+     max_labels_count     = 500,
+     max_boxes_count      = 50,
+     calc_on_every_tick   = false)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+string G_SESS = "Session"
+string G_VA   = "Value area (LTF volume)"
+string G_SIG  = "Signals"
+string G_VIS  = "Visuals"
+string G_ALR  = "Alerts"
+
+i_sess      = input.session("0930-1600", "Session (chart timeframe)", group=G_SESS,
+     tooltip="Bars inside this window are ‘in session’. First N chart bars of the session form the opening candle.")
+i_tz        = input.string("America/New_York", "Session timezone", group=G_SESS)
+i_openTf    = input.timeframe("15", "Opening candle length (timeframe)", group=G_SESS,
+     tooltip="Opening range = first chart bars whose total duration matches this TF. Example: 15m opening on a 5m chart uses 3 bars.")
+
+i_ltf       = input.timeframe("1", "Lower timeframe for volume profile", group=G_VA,
+     tooltip="Must be STRICTLY lower than the chart timeframe. Each LTF bar’s volume is placed at typical price (H+L+C)/3, then histogrammed.")
+i_vaPct     = input.float(70.0, "Value area volume %", minval=50.0, maxval=95.0, step=0.5, group=G_VA)
+i_bins      = input.int(48, "Histogram bins (price rows)", minval=12, maxval=200, group=G_VA)
+
+i_showLevels= input.bool(true, "Show FC / VA levels (dotted lines)", group=G_VIS)
+i_showSig   = input.bool(true, "Show signal markers & labels", group=G_VIS)
+i_showInv   = input.bool(true, "Show invalidation markers", group=G_VIS)
+i_showRt    = input.bool(true, "Show retest markers", group=G_VIS)
+i_extend    = input.bool(true, "Extend level lines through session", group=G_VIS)
+
+i_strictRev = input.bool(false, "Stricter reversal: require prior close outside VA", group=G_SIG,
+     tooltip="If true: bearish reversal needs prior close > VAH; bullish reversal needs prior close < VAL.")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SESSION
+// ══════════════════════════════════════════════════════════════════════════════
+float chartSec = timeframe.in_seconds()
+float openSec  = timeframe.in_seconds(i_openTf)
+// Bars to aggregate from session start; if opening TF < chart TF, this is 1 bar (degenerate) — prefer opening TF ≥ chart TF.
+int   openBarsNeeded = chartSec > 0 ? int(math.max(1, math.round(openSec / chartSec))) : 1
+bool openTfOk = openSec >= chartSec
+
+bool inSess = not na(time(timeframe.period, i_sess, i_tz))
+bool newSess = inSess and not inSess[1]
+
+// LTF sanity: must be lower than chart TF for intrabar arrays
+float ltfSec = timeframe.in_seconds(i_ltf)
+bool ltfOk = ltfSec < chartSec
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VALUE AREA — LTF reconstruction (non-repainting)
+// ══════════════════════════════════════════════════════════════════════════════
+// Pine cannot rebuild true tick-level TPO. We approximate by distributing each LTF
+// bar’s volume to typical price (H+L+C)/3, binning across the opening range, then
+// expanding from POC until i_vaPct of profile volume is captured (market-profile style).
+// Multi-bar openings: LTF contributions are accumulated across all opening chart bars.
+// ══════════════════════════════════════════════════════════════════════════════
+
+var int   opBars = 0
+var float accH = na
+var float accL = na
+var array<float> ltfTP = array.new_float(0)
+var array<float> ltfVL = array.new_float(0)
+var bool  sessVAComputed = false
+
+var float fcHigh = na
+var float fcLow = na
+var float vah = na
+var float val = na
+
+f_vaFromBins(float lo, float hi, array<float> binVol, float pct) =>
+    int n = array.size(binVol)
+    float vahOut = na
+    float valOut = na
+    if n > 0 and not na(lo) and not na(hi) and hi > lo
+        float total = 0.0
+        for b = 0 to n - 1
+            total += array.get(binVol, b)
+        if total > 0
+            int poc = 0
+            float best = -1.0
+            for b = 0 to n - 1
+                float w = array.get(binVol, b)
+                if w > best
+                    best := w
+                    poc := b
+            float cum = array.get(binVol, poc)
+            int loB = poc
+            int hiB = poc
+            float target = total * (pct / 100.0)
+            int guard = 0
+            while cum < target and (loB > 0 or hiB < n - 1) and guard < n + 5
+                guard += 1
+                float vLo = loB > 0 ? array.get(binVol, loB - 1) : 0.0
+                float vHi = hiB < n - 1 ? array.get(binVol, hiB + 1) : 0.0
+                if vLo <= 0 and vHi <= 0
+                    break
+                if vHi >= vLo
+                    hiB += 1
+                    cum += vHi
+                else
+                    loB -= 1
+                    cum += vLo
+            float step = (hi - lo) / n
+            valOut := lo + loB * step
+            vahOut := lo + (hiB + 1) * step
+        else
+            float mid = (lo + hi) * 0.5
+            float w = (hi - lo) * (pct / 100.0) * 0.5
+            valOut := mid - w
+            vahOut := mid + w
+    [valOut, vahOut]
+
+if newSess
+    opBars := 0
+    accH := na
+    accL := na
+    array.clear(ltfTP)
+    array.clear(ltfVL)
+    sessVAComputed := false
+    fcHigh := na
+    fcLow := na
+    vah := na
+    val := na
+
+if inSess and barstate.isconfirmed and ltfOk and not sessVAComputed
+    if opBars < openBarsNeeded
+        accH := na(accH) ? high : math.max(accH, high)
+        accL := na(accL) ? low : math.min(accL, low)
+        // v6: no barmerge gaps/lookahead; optional args per language reference.
+        [_oa, hArr, lArr, cArr, vArr] = request.security_lower_tf(syminfo.tickerid, i_ltf, [open, high, low, close, volume], ignore_invalid_timeframe = true)
+        int m = array.size(hArr)
+        if m > 0
+            for i = 0 to m - 1
+                float th = array.get(hArr, i)
+                float tl = array.get(lArr, i)
+                float tc = array.get(cArr, i)
+                float tv = array.get(vArr, i)
+                float tp = (th + tl + tc) / 3.0
+                array.push(ltfTP, tp)
+                array.push(ltfVL, tv)
+        opBars += 1
+    if opBars == openBarsNeeded
+        fcHigh := accH
+        fcLow := accL
+        float lo = accL
+        float hi = accH
+        int nb = i_bins
+        array<float> bins = array.new_float(nb, 0.0)
+        if hi > lo and array.size(ltfTP) > 0
+            int np = array.size(ltfTP)
+            for i = 0 to np - 1
+                float px = array.get(ltfTP, i)
+                float vv = array.get(ltfVL, i)
+                if not na(px) and not na(vv) and vv > 0
+                    int idx = int(math.floor((px - lo) / (hi - lo) * nb))
+                    idx := math.max(0, math.min(nb - 1, idx))
+                    array.set(bins, idx, array.get(bins, idx) + vv)
+            [vLo, vHi] = f_vaFromBins(lo, hi, bins, i_vaPct)
+            val := vLo
+            vah := vHi
+        else
+            // Fallback: no LTF rows or flat bar — symmetric pseudo-VA inside range
+            float mid = (lo + hi) * 0.5
+            float w = (hi - lo) * (i_vaPct / 100.0) * 0.5
+            val := mid - w
+            vah := mid + w
+        sessVAComputed := true
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNAL STATE (intraday, resets each session)
+// ══════════════════════════════════════════════════════════════════════════════
+var bool extUp = false
+var bool extDown = false
+var bool bullBreakActive = false
+var bool bearBreakActive = false
+var int  lastBullBoBar = na
+var int  lastBearBoBar = na
+
+if newSess
+    extUp := false
+    extDown := false
+    bullBreakActive := false
+    bearBreakActive := false
+    lastBullBoBar := na
+    lastBearBoBar := na
+
+bool vaReady = sessVAComputed and not na(vah) and not na(val) and not na(fcHigh) and not na(fcLow)
+
+if vaReady and inSess
+    extUp := extUp or high > vah
+    extDown := extDown or low < val
+
+bool prevCloseAboveVAH = close[1] > vah
+bool prevCloseBelowVAL = close[1] < val
+
+bool sigBullBO = vaReady and inSess and barstate.isconfirmed and close > vah and close[1] <= vah
+bool sigBearBO = vaReady and inSess and barstate.isconfirmed and close < val and close[1] >= val
+
+bool revBearCond = vaReady and inSess and barstate.isconfirmed and extUp and close >= val and close <= vah and (not i_strictRev or prevCloseAboveVAH)
+bool revBullCond = vaReady and inSess and barstate.isconfirmed and extDown and close >= val and close <= vah and (not i_strictRev or prevCloseBelowVAL)
+
+bool sigBearRev = revBearCond
+bool sigBullRev = revBullCond
+
+if sigBullBO
+    bullBreakActive := true
+    lastBullBoBar := bar_index
+if sigBearBO
+    bearBreakActive := true
+    lastBearBoBar := bar_index
+
+// Invalidation: accepted outside VA, then close back inside VA body
+bool invBull = vaReady and inSess and barstate.isconfirmed and bullBreakActive and close >= val and close <= vah
+bool invBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and close >= val and close <= vah
+
+if invBull
+    bullBreakActive := false
+if invBear
+    bearBreakActive := false
+
+// Retest: after BO, touch VA boundary from outside but close holds outside
+bool sigRetestBull = vaReady and inSess and barstate.isconfirmed and bullBreakActive and not na(lastBullBoBar) and bar_index > lastBullBoBar and low <= vah and close > vah
+bool sigRetestBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and not na(lastBearBoBar) and bar_index > lastBearBoBar and high >= val and close < val
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LEVEL LINES (dotted)
+// ══════════════════════════════════════════════════════════════════════════════
+var line lnFcH = na
+var line lnFcL = na
+var line lnVah = na
+var line lnVal = na
+var int  lvlStart = na
+
+f_delLine(line l) =>
+    if not na(l)
+        line.delete(l)
+
+if newSess
+    f_delLine(lnFcH)
+    f_delLine(lnFcL)
+    f_delLine(lnVah)
+    f_delLine(lnVal)
+    lnFcH := na
+    lnFcL := na
+    lnVah := na
+    lnVal := na
+    lvlStart := na
+
+if i_showLevels and vaReady and inSess
+    if na(lvlStart)
+        lvlStart := bar_index
+        lnFcH := line.new(lvlStart, fcHigh, bar_index, fcHigh, extend=i_extend ? extend.right : extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
+        lnFcL := line.new(lvlStart, fcLow, bar_index, fcLow, extend=i_extend ? extend.right : extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
+        lnVah := line.new(lvlStart, vah, bar_index, vah, extend=i_extend ? extend.right : extend.none, color=color.new(color.teal, 0), width=2, style=line.style_dotted)
+        lnVal := line.new(lvlStart, val, bar_index, val, extend=i_extend ? extend.right : extend.none, color=color.new(color.orange, 0), width=2, style=line.style_dotted)
+    else
+        line.set_x2(lnFcH, bar_index)
+        line.set_x2(lnFcL, bar_index)
+        line.set_x2(lnVah, bar_index)
+        line.set_x2(lnVal, bar_index)
+        line.set_y1(lnFcH, fcHigh)
+        line.set_y2(lnFcH, fcHigh)
+        line.set_y1(lnFcL, fcLow)
+        line.set_y2(lnFcL, fcLow)
+        line.set_y1(lnVah, vah)
+        line.set_y2(lnVah, vah)
+        line.set_y1(lnVal, val)
+        line.set_y2(lnVal, val)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MARKERS & LABELS
+// ══════════════════════════════════════════════════════════════════════════════
+plotshape(i_showSig and sigBullBO, title="Bull breakout", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny)
+plotshape(i_showSig and sigBearBO, title="Bear breakout", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+plotshape(i_showSig and sigBullRev, title="Bull reversal", style=shape.circle, location=location.belowbar, color=color.new(color.aqua, 0), size=size.small)
+plotshape(i_showSig and sigBearRev, title="Bear reversal", style=shape.circle, location=location.abovebar, color=color.new(color.fuchsia, 0), size=size.small)
+plotshape(i_showRt and sigRetestBull, title="Bull retest", style=shape.cross, location=location.belowbar, color=color.new(color.yellow, 0), size=size.tiny)
+plotshape(i_showRt and sigRetestBear, title="Bear retest", style=shape.cross, location=location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
+plotshape(i_showInv and invBull, title="Invalidate bull breakout", style=shape.xcross, location=location.abovebar, color=color.new(color.gray, 0), size=size.tiny)
+plotshape(i_showInv and invBear, title="Invalidate bear breakout", style=shape.xcross, location=location.belowbar, color=color.new(color.gray, 0), size=size.tiny)
+
+if i_showSig and barstate.isconfirmed
+    if sigBullBO
+        label.new(bar_index, low, "Bull BO", style=label.style_label_up, color=color.new(color.lime, 20), textcolor=color.black, size=size.small)
+    if sigBearBO
+        label.new(bar_index, high, "Bear BO", style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+    if sigBullRev
+        label.new(bar_index, low, "Bull Rev", style=label.style_label_up, color=color.new(color.aqua, 20), textcolor=color.black, size=size.small)
+    if sigBearRev
+        label.new(bar_index, high, "Bear Rev", style=label.style_label_down, color=color.new(color.fuchsia, 20), textcolor=color.white, size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+alertcondition(sigBullBO, title="Bullish breakout (close)", message="FCV: Bullish breakout — close above VAH")
+alertcondition(sigBearBO, title="Bearish breakout (close)", message="FCV: Bearish breakout — close below VAL")
+alertcondition(sigBullRev, title="Bullish reversal (false break down)", message="FCV: Bullish reversal — back inside VA after probe below VAL")
+alertcondition(sigBearRev, title="Bearish reversal (false break up)", message="FCV: Bearish reversal — back inside VA after probe above VAH")
+alertcondition(sigRetestBull, title="Bullish retest of VAH", message="FCV: Retest of VAH from above (bull trend)")
+alertcondition(sigRetestBear, title="Bearish retest of VAL", message="FCV: Retest of VAL from below (bear trend)")
+alertcondition(invBull, title="Bullish breakout invalidated", message="FCV: Bullish breakout invalidated — close back inside VA")
+alertcondition(invBear, title="Bearish breakout invalidated", message="FCV: Bearish breakout invalidated — close back inside VA")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DATA WINDOW (levels)
+// ══════════════════════════════════════════════════════════════════════════════
+plot(vaReady ? fcHigh : na, title="FC High", display=display.data_window, color=color.new(color.gray, 100))
+plot(vaReady ? fcLow : na, title="FC Low", display=display.data_window, color=color.new(color.gray, 100))
+plot(vaReady ? vah : na, title="VAH", display=display.data_window, color=color.new(color.teal, 100))
+plot(vaReady ? val : na, title="VAL", display=display.data_window, color=color.new(color.orange, 100))
+
+if barstate.islastconfirmedhistory and not ltfOk
+    label.new(bar_index, high, "FCV: Set LTF lower than chart TF for volume profile.", style=label.style_label_lower_left, color=color.orange, textcolor=color.white, size=size.small)
+
+if barstate.islastconfirmedhistory and not openTfOk
+    label.new(bar_index, low, "FCV: Opening TF should be ≥ chart TF (e.g. 15m open on 5m chart).", style=label.style_label_upper_left, color=color.purple, textcolor=color.white, size=size.small)

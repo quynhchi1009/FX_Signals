@@ -1,0 +1,472 @@
+//@version=6
+// ══════════════════════════════════════════════════════════════════════════════
+// First Candle Value Area — STRATEGY (Pine v6)
+// Same signal engine as the indicator; backtestable with configurable entries,
+// stops, targets, trailing, breakeven, and session trade limits.
+// Non-repainting: calc_on_every_tick false, orders on bar close, security lookahead off.
+// ══════════════════════════════════════════════════════════════════════════════
+strategy("First Candle Value [Strategy]",
+     overlay                   = true,
+     pyramiding                = 0,
+     calc_on_every_tick        = false,
+     process_orders_on_close   = true,
+     initial_capital           = 100000,
+     default_qty_type          = strategy.percent_of_equity,
+     default_qty_value         = 1,
+     commission_type           = strategy.commission.percent,
+     commission_value          = 0.0,
+     slippage                  = 0,
+     max_lines_count           = 300,
+     max_labels_count          = 300)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS — SESSION & VA (mirror indicator)
+// ══════════════════════════════════════════════════════════════════════════════
+string G_SESS = "Session & value area"
+string G_ENT  = "Entries"
+string G_SL   = "Stop loss"
+string G_TP   = "Take profit"
+string G_TR   = "Trailing"
+string G_RISK = "Risk management"
+string G_VIS  = "Visuals"
+
+i_sess      = input.session("0930-1600", "Session (chart timeframe)", group=G_SESS)
+i_tz        = input.string("America/New_York", "Session timezone", group=G_SESS)
+i_openTf    = input.timeframe("15", "Opening candle length", group=G_SESS)
+i_ltf       = input.timeframe("1", "LTF for volume profile", group=G_SESS)
+i_vaPct     = input.float(70.0, "Value area volume %", minval=50.0, maxval=95.0, step=0.5, group=G_SESS)
+i_bins      = input.int(48, "Histogram bins", minval=12, maxval=200, group=G_SESS)
+i_strictRev = input.bool(false, "Stricter reversal (prior close outside VA)", group=G_SESS)
+
+i_useBO     = input.bool(true, "Trade breakouts", group=G_ENT)
+i_useRev    = input.bool(true, "Trade reversals", group=G_ENT)
+i_long      = input.bool(true, "Allow longs", group=G_ENT)
+i_short     = input.bool(true, "Allow shorts", group=G_ENT)
+
+i_slMode    = input.string("Opposite VA", "Stop mode", group=G_SL,
+     options=["Opposite VA", "First candle", "Signal bar", "Retest candle", "ATR"])
+i_atrLen    = input.int(14, "ATR length (ATR stop)", minval=1, group=G_SL)
+i_atrStopM  = input.float(1.5, "ATR × (stop distance)", minval=0.1, step=0.1, group=G_SL)
+i_slBuffer  = input.float(0.0, "Extra stop buffer (× mintick)", minval=0.0, step=1.0, group=G_SL)
+
+i_tpMode    = input.string("Fixed R multiple", "Take-profit mode", group=G_TP,
+     options=["Fixed R multiple", "Opposite first candle", "Trailing only", "Partial R + trail"])
+i_tpR       = input.float(2.0, "TP: R multiple (full or first leg)", minval=0.1, step=0.1, group=G_TP)
+i_partialPct= input.float(50.0, "Partial exit % of position", minval=5.0, maxval=95.0, step=5.0, group=G_TP)
+i_partialR  = input.float(1.0, "Partial at R", minval=0.1, step=0.1, group=G_TP)
+
+i_trailOn   = input.bool(true, "Use trailing (after TP modes that keep a runner)", group=G_TR,
+     tooltip="Applies to Trailing only, Partial R + trail, and can tighten stops for Fixed R / Opposite FC when enabled below.")
+i_trailMode = input.string("Previous candle", "Trail mode", group=G_TR,
+     options=["Off", "Previous candle", "Swing window", "ATR"])
+i_swingLB   = input.int(5, "Swing trail: lookback bars", minval=2, maxval=100, group=G_TR)
+i_trailAtrM = input.float(1.0, "ATR trail ×", minval=0.1, step=0.1, group=G_TR)
+i_trailBuf  = input.float(0.0, "Trail buffer (× mintick)", minval=0.0, step=1.0, group=G_TR)
+
+i_beR       = input.float(1.0, "Move stop to breakeven after +R (0 = off)", minval=0.0, step=0.1, group=G_RISK)
+i_onePerDir = input.bool(true, "One trade per direction per session", group=G_RISK)
+i_oneTotal  = input.bool(false, "One trade total per session", group=G_RISK)
+
+i_showLbl   = input.bool(true, "Show entry labels", group=G_VIS)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SESSION / TF
+// ══════════════════════════════════════════════════════════════════════════════
+float chartSec = timeframe.in_seconds()
+float openSec  = timeframe.in_seconds(i_openTf)
+int   openBarsNeeded = chartSec > 0 ? int(math.max(1, math.round(openSec / chartSec))) : 1
+bool inSess = not na(time(timeframe.period, i_sess, i_tz))
+bool newSess = inSess and not inSess[1]
+float ltfSec = timeframe.in_seconds(i_ltf)
+bool ltfOk = ltfSec < chartSec
+
+float atrV = ta.atr(i_atrLen)
+float buf = i_slBuffer * syminfo.mintick
+float tbuf = i_trailBuf * syminfo.mintick
+
+// ══════════════════════════════════════════════════════════════════════════════
+// OPENING + VA (same algorithm as indicator)
+// ══════════════════════════════════════════════════════════════════════════════
+var int   opBars = 0
+var float accH = na
+var float accL = na
+var array<float> ltfTP = array.new_float(0)
+var array<float> ltfVL = array.new_float(0)
+var bool  sessVAComputed = false
+
+var float fcHigh = na
+var float fcLow = na
+var float vah = na
+var float val = na
+
+f_vaFromBins(float lo, float hi, array<float> binVol, float pct) =>
+    int n = array.size(binVol)
+    float vahOut = na
+    float valOut = na
+    if n > 0 and not na(lo) and not na(hi) and hi > lo
+        float total = 0.0
+        for b = 0 to n - 1
+            total += array.get(binVol, b)
+        if total > 0
+            int poc = 0
+            float best = -1.0
+            for b = 0 to n - 1
+                float w = array.get(binVol, b)
+                if w > best
+                    best := w
+                    poc := b
+            float cum = array.get(binVol, poc)
+            int loB = poc
+            int hiB = poc
+            float target = total * (pct / 100.0)
+            int guard = 0
+            while cum < target and (loB > 0 or hiB < n - 1) and guard < n + 5
+                guard += 1
+                float vLo = loB > 0 ? array.get(binVol, loB - 1) : 0.0
+                float vHi = hiB < n - 1 ? array.get(binVol, hiB + 1) : 0.0
+                if vLo <= 0 and vHi <= 0
+                    break
+                if vHi >= vLo
+                    hiB += 1
+                    cum += vHi
+                else
+                    loB -= 1
+                    cum += vLo
+            float step = (hi - lo) / n
+            valOut := lo + loB * step
+            vahOut := lo + (hiB + 1) * step
+        else
+            float mid = (lo + hi) * 0.5
+            float w = (hi - lo) * (pct / 100.0) * 0.5
+            valOut := mid - w
+            vahOut := mid + w
+    [valOut, vahOut]
+
+if newSess
+    opBars := 0
+    accH := na
+    accL := na
+    array.clear(ltfTP)
+    array.clear(ltfVL)
+    sessVAComputed := false
+    fcHigh := na
+    fcLow := na
+    vah := na
+    val := na
+
+if inSess and barstate.isconfirmed and ltfOk and not sessVAComputed
+    if opBars < openBarsNeeded
+        accH := na(accH) ? high : math.max(accH, high)
+        accL := na(accL) ? low : math.min(accL, low)
+        // v6: no barmerge gaps/lookahead; optional args per language reference.
+        [_oa, hArr, lArr, cArr, vArr] = request.security_lower_tf(syminfo.tickerid, i_ltf, [open, high, low, close, volume], ignore_invalid_timeframe = true)
+        int m = array.size(hArr)
+        if m > 0
+            for i = 0 to m - 1
+                float th = array.get(hArr, i)
+                float tl = array.get(lArr, i)
+                float tc = array.get(cArr, i)
+                float tv = array.get(vArr, i)
+                float tp = (th + tl + tc) / 3.0
+                array.push(ltfTP, tp)
+                array.push(ltfVL, tv)
+        opBars += 1
+    if opBars == openBarsNeeded
+        fcHigh := accH
+        fcLow := accL
+        float lo = accL
+        float hi = accH
+        int nb = i_bins
+        array<float> bins = array.new_float(nb, 0.0)
+        if hi > lo and array.size(ltfTP) > 0
+            int np = array.size(ltfTP)
+            for i = 0 to np - 1
+                float px = array.get(ltfTP, i)
+                float vv = array.get(ltfVL, i)
+                if not na(px) and not na(vv) and vv > 0
+                    int idx = int(math.floor((px - lo) / (hi - lo) * nb))
+                    idx := math.max(0, math.min(nb - 1, idx))
+                    array.set(bins, idx, array.get(bins, idx) + vv)
+            [vLo, vHi] = f_vaFromBins(lo, hi, bins, i_vaPct)
+            val := vLo
+            vah := vHi
+        else
+            float mid = (lo + hi) * 0.5
+            float w = (hi - lo) * (i_vaPct / 100.0) * 0.5
+            val := mid - w
+            vah := mid + w
+        sessVAComputed := true
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNALS (same as indicator)
+// ══════════════════════════════════════════════════════════════════════════════
+var bool extUp = false
+var bool extDown = false
+var bool bullBreakActive = false
+var bool bearBreakActive = false
+var int  lastBullBoBar = na
+var int  lastBearBoBar = na
+
+if newSess
+    extUp := false
+    extDown := false
+    bullBreakActive := false
+    bearBreakActive := false
+    lastBullBoBar := na
+    lastBearBoBar := na
+
+bool vaReady = sessVAComputed and not na(vah) and not na(val) and not na(fcHigh) and not na(fcLow)
+
+if vaReady and inSess
+    extUp := extUp or high > vah
+    extDown := extDown or low < val
+
+bool prevCloseAboveVAH = close[1] > vah
+bool prevCloseBelowVAL = close[1] < val
+
+bool sigBullBO = vaReady and inSess and barstate.isconfirmed and close > vah and close[1] <= vah
+bool sigBearBO = vaReady and inSess and barstate.isconfirmed and close < val and close[1] >= val
+bool sigBearRev = vaReady and inSess and barstate.isconfirmed and extUp and close >= val and close <= vah and (not i_strictRev or prevCloseAboveVAH)
+bool sigBullRev = vaReady and inSess and barstate.isconfirmed and extDown and close >= val and close <= vah and (not i_strictRev or prevCloseBelowVAL)
+
+if sigBullBO
+    bullBreakActive := true
+    lastBullBoBar := bar_index
+if sigBearBO
+    bearBreakActive := true
+    lastBearBoBar := bar_index
+
+bool invBull = vaReady and inSess and barstate.isconfirmed and bullBreakActive and close >= val and close <= vah
+bool invBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and close >= val and close <= vah
+if invBull
+    bullBreakActive := false
+if invBear
+    bearBreakActive := false
+
+bool sigRetestBull = vaReady and inSess and barstate.isconfirmed and bullBreakActive and not na(lastBullBoBar) and bar_index > lastBullBoBar and low <= vah and close > vah
+bool sigRetestBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and not na(lastBearBoBar) and bar_index > lastBearBoBar and high >= val and close < val
+
+var float sessRetestLow = na
+var float sessRetestHigh = na
+if newSess
+    sessRetestLow := na
+    sessRetestHigh := na
+if sigRetestBull
+    sessRetestLow := low
+if sigRetestBear
+    sessRetestHigh := high
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SESSION TRADE GATES
+// ══════════════════════════════════════════════════════════════════════════════
+var bool tradedLongSess = false
+var bool tradedShortSess = false
+var bool tradedAnySess = false
+
+if newSess
+    tradedLongSess := false
+    tradedShortSess := false
+    tradedAnySess := false
+
+bool flat = strategy.position_size == 0
+
+bool wantLongBO  = i_useBO and i_long and sigBullBO
+bool wantShortBO = i_useBO and i_short and sigBearBO
+bool wantLongRV  = i_useRev and i_long and sigBullRev
+bool wantShortRV = i_useRev and i_short and sigBearRev
+
+bool allowLong = flat and inSess and vaReady and not (i_oneTotal and tradedAnySess) and not (i_onePerDir and tradedLongSess)
+bool allowShort = flat and inSess and vaReady and not (i_oneTotal and tradedAnySess) and not (i_onePerDir and tradedShortSess)
+
+bool doLong = (wantLongBO or wantLongRV) and allowLong
+bool doShort = (wantShortBO or wantShortRV) and allowShort
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STOP / TARGET HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+f_slLong(float ep, float sigLow) =>
+    float s = na
+    if i_slMode == "Opposite VA"
+        s := val - buf
+    else if i_slMode == "First candle"
+        s := fcLow - buf
+    else if i_slMode == "Signal bar"
+        s := sigLow - buf
+    else if i_slMode == "Retest candle"
+        s := (na(sessRetestLow) ? sigLow : sessRetestLow) - buf
+    else
+        s := ep - atrV * i_atrStopM
+    s
+
+f_slShort(float ep, float sigHigh) =>
+    float s = na
+    if i_slMode == "Opposite VA"
+        s := vah + buf
+    else if i_slMode == "First candle"
+        s := fcHigh + buf
+    else if i_slMode == "Signal bar"
+        s := sigHigh + buf
+    else if i_slMode == "Retest candle"
+        s := (na(sessRetestHigh) ? sigHigh : sessRetestHigh) + buf
+    else
+        s := ep + atrV * i_atrStopM
+    s
+
+f_tpLong(float ep, float sl) =>
+    float risk = ep - sl
+    float t = na
+    if i_tpMode == "Fixed R multiple"
+        t := ep + risk * i_tpR
+    else if i_tpMode == "Opposite first candle"
+        t := fcHigh
+    else
+        t := na
+    t
+
+f_tpShort(float ep, float sl) =>
+    float risk = sl - ep
+    float t = na
+    if i_tpMode == "Fixed R multiple"
+        t := ep - risk * i_tpR
+    else if i_tpMode == "Opposite first candle"
+        t := fcLow
+    else
+        t := na
+    t
+
+f_trailStopLong(float baseSl) =>
+    float out = baseSl
+    if i_trailOn and i_trailMode != "Off"
+        if i_trailMode == "Previous candle"
+            out := math.max(out, low[1] - tbuf)
+        else if i_trailMode == "Swing window"
+            out := math.max(out, ta.lowest(low, i_swingLB)[1] - tbuf)
+        else if i_trailMode == "ATR"
+            out := math.max(out, close - atrV * i_trailAtrM)
+    out
+
+f_trailStopShort(float baseSl) =>
+    float out = baseSl
+    if i_trailOn and i_trailMode != "Off"
+        if i_trailMode == "Previous candle"
+            out := math.min(out, high[1] + tbuf)
+        else if i_trailMode == "Swing window"
+            out := math.min(out, ta.highest(high, i_swingLB)[1] + tbuf)
+        else if i_trailMode == "ATR"
+            out := math.min(out, close + atrV * i_trailAtrM)
+    out
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POSITION STATE — initial SL frozen at entry bar (non-repaint)
+// ══════════════════════════════════════════════════════════════════════════════
+var float longInitialSl = na
+var float shortInitialSl = na
+var float longRisk = na
+var float shortRisk = na
+
+if flat
+    longInitialSl := na
+    shortInitialSl := na
+    longRisk := na
+    shortRisk := na
+
+if doLong
+    float ep = close
+    float sl0 = f_slLong(ep, low)
+    float rk = ep - sl0
+    if rk > 0
+        longInitialSl := sl0
+        longRisk := rk
+        strategy.entry("L", strategy.long)
+        tradedLongSess := true
+        tradedAnySess := true
+        if i_showLbl
+            label.new(bar_index, low, "L " + (wantLongBO ? "BO" : "Rev"), style=label.style_label_up, color=color.teal, textcolor=color.white, size=size.small)
+
+if doShort
+    float ep = close
+    float sl0 = f_slShort(ep, high)
+    float rk = sl0 - ep
+    if rk > 0
+        shortInitialSl := sl0
+        shortRisk := rk
+        strategy.entry("S", strategy.short)
+        tradedShortSess := true
+        tradedAnySess := true
+        if i_showLbl
+            label.new(bar_index, high, "S " + (wantShortBO ? "BO" : "Rev"), style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MANAGE OPEN POSITIONS (exits on close)
+// ══════════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed
+    if strategy.position_size > 0 and not na(longInitialSl)
+        float ep = strategy.position_avg_price
+        float risk = nz(longRisk, ep - longInitialSl)
+        float sl = longInitialSl
+        if i_beR > 0 and risk > 0 and close >= ep + risk * i_beR
+            sl := math.max(sl, ep)
+        float tpFull = f_tpLong(ep, longInitialSl)
+        float tpPart = risk > 0 ? ep + risk * i_partialR : na
+
+        if i_tpMode == "Trailing only"
+            float slTb = longInitialSl
+            if i_beR > 0 and risk > 0 and close >= ep + risk * i_beR
+                slTb := math.max(slTb, ep)
+            float slT = f_trailStopLong(slTb)
+            strategy.exit("LX", from_entry="L", stop=slT)
+        else if i_tpMode == "Partial R + trail" and risk > 0
+            float slBase = longInitialSl
+            if i_beR > 0 and risk > 0 and close >= ep + risk * i_beR
+                slBase := math.max(slBase, ep)
+            float slP = slBase
+            float slR = f_trailStopLong(slBase)
+            strategy.exit("LXp", from_entry="L", qty_percent=i_partialPct, limit=tpPart, stop=slP)
+            strategy.exit("LXr", from_entry="L", stop=slR)
+        else
+            if i_trailOn and i_trailMode != "Off"
+                sl := f_trailStopLong(sl)
+            strategy.exit("LX", from_entry="L", limit=tpFull, stop=sl)
+
+    if strategy.position_size < 0 and not na(shortInitialSl)
+        float ep = strategy.position_avg_price
+        float risk = nz(shortRisk, shortInitialSl - ep)
+        float sl = shortInitialSl
+        if i_beR > 0 and risk > 0 and close <= ep - risk * i_beR
+            sl := math.min(sl, ep)
+        float tpFull = f_tpShort(ep, shortInitialSl)
+        float tpPart = risk > 0 ? ep - risk * i_partialR : na
+
+        if i_tpMode == "Trailing only"
+            float slTb = shortInitialSl
+            if i_beR > 0 and risk > 0 and close <= ep - risk * i_beR
+                slTb := math.min(slTb, ep)
+            float slT = f_trailStopShort(slTb)
+            strategy.exit("SX", from_entry="S", stop=slT)
+        else if i_tpMode == "Partial R + trail" and risk > 0
+            float slBase = shortInitialSl
+            if i_beR > 0 and risk > 0 and close <= ep - risk * i_beR
+                slBase := math.min(slBase, ep)
+            float slP = slBase
+            float slR = f_trailStopShort(slBase)
+            strategy.exit("SXp", from_entry="S", qty_percent=i_partialPct, limit=tpPart, stop=slP)
+            strategy.exit("SXr", from_entry="S", stop=slR)
+        else
+            if i_trailOn and i_trailMode != "Off"
+                sl := f_trailStopShort(sl)
+            strategy.exit("SX", from_entry="S", limit=tpFull, stop=sl)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LIMITATIONS (read before live trading)
+// ══════════════════════════════════════════════════════════════════════════════
+// • Value area is an LTF volume histogram proxy, not exchange tick TPO; results
+//   differ from professional VP tools when intra-bar volume distribution skews.
+// • request.security_lower_tf (v6) returns LTF bars per chart bar; no barmerge
+//   gaps/lookahead — intrabars are historical to the bar. We accumulate across
+//   opening session bars when LTF < chart TF and opening TF ≥ chart TF.
+// • “Retest candle” stop uses the last retest low/high seen this session before
+//   entry; if none yet, it falls back to the entry bar’s low/high.
+// • Partial + trail: two strategy.exit brackets split qty; behaviour matches
+//   TradingView’s bracket semantics (see docs for partial fills).
+// • No martingale / averaging / lookahead; entries and dynamic exits use the
+//   bar’s OHLC after close when process_orders_on_close is true.
