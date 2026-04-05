@@ -1,6 +1,6 @@
 # TradingView Pine Scripts
 
-Pine Script **v6** projects for TradingView: an **engulfing** strategy + indicator, and a separate **Casper SMC** session/FVG toolkit.
+Pine Script projects for [TradingView](https://www.tradingview.com/): session-based and price-action tools. Most active scripts use **Pine v6**; a few utilities remain on **v5** (see each folder).
 
 Repository: [github.com/quynhchi1009/FX_Signals](https://github.com/quynhchi1009/FX_Signals)
 
@@ -8,8 +8,11 @@ Repository: [github.com/quynhchi1009/FX_Signals](https://github.com/quynhchi1009
 
 | Folder | Contents |
 |--------|----------|
-| [`engulfing/`](engulfing/) | Engulfing candle **strategy** and **indicator** |
-| [`casper_smc/`](casper_smc/) | Casper SMC 15m session range + FVG **strategy** and **indicator** |
+| [`engulfing/`](engulfing/) | Engulfing candle **strategy** and **indicator** (v6) |
+| [`casper_smc/`](casper_smc/) | Casper SMC 15m session range + FVG **strategy** and **indicator** (v6) |
+| [`first_candle_value/`](first_candle_value/) | First NY-session **M15** opening range: **strategy** + **indicator** (v6) |
+| [`monday_range/`](monday_range/) | **Monday range** ICT/SMC **strategy** (v5), daily chart |
+| [`trend_filters_dashboard/`](trend_filters_dashboard/) | SMC/ICT **filters dashboard** **indicator** (v5) |
 
 ---
 
@@ -123,6 +126,40 @@ The indicator fires a TradingView **`alert()`** when a **full** BUY or SELL setu
 5. The notification body includes **Limit / SL / TP** text so you can place the limit on **MetaTrader 5** manually; always double-check prices against the chart and your broker’s symbol specs (US100 vs NAS100, digits, etc.).
 
 **Note:** TradingView alerts run on TradingView’s servers when the condition is met; you do not need to keep the chart open 24/7, but you need a working alert subscription and notification permissions on your device.
+
+---
+
+## First Candle Value (`first_candle_value/`)
+
+Opening **high/low** of the **first 15-minute bar** of your configured **New York session** (default cash-style window), with optional breakout/reversal-style logic and rich **strategy** exits (stops, R multiples, partials, trailing).
+
+| File | Type | Notes |
+|------|------|--------|
+| [`first_candle_value/FirstCandleValue_Strategy.pine`](first_candle_value/FirstCandleValue_Strategy.pine) | Strategy | **Backtest on M15.** Dotted opening H/L lines visible on **M1 / M5 / M15** through session end; above M15 a table + tint explains to switch timeframe. |
+| [`first_candle_value/FirstCandleValue_Indicator.pine`](first_candle_value/FirstCandleValue_Indicator.pine) | Indicator | **Value area** (~70% volume via LTF histogram proxy), VAH/VAL, signals, alerts; **≤ M15** intraday charts for full logic + timeframe warning above M15. |
+
+- Pine **v6**; `process_orders_on_close = true` on the strategy for bar-close style fills.
+- Strategy `strategy()` declaration does **not** use `max_tables_count` (indicator-only parameter in Pine).
+
+---
+
+## Monday range (`monday_range/`)
+
+| File | Purpose |
+|------|---------|
+| [`monday_range/monday_range_strategy.pine`](monday_range/monday_range_strategy.pine) | Weekly Monday range MSS-style **strategy** on **1D**; one trade per week option, optional Friday flatten. |
+
+- Pine **v5**.
+
+---
+
+## Trend filters dashboard (`trend_filters_dashboard/`)
+
+| File | Purpose |
+|------|---------|
+| [`trend_filters_dashboard/trend_filters_dashboard_indicator.pine`](trend_filters_dashboard/trend_filters_dashboard_indicator.pine) | Overlay **table**: EMA, MACD, RSI, ADX, VWAP, Supertrend, higher-timeframe bias (configurable HTF). |
+
+- Pine **v5**; display-only (no strategy orders).
 
 ---
 

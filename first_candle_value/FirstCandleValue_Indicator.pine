@@ -9,6 +9,7 @@ indicator("First Candle Value [Indicator]",
      max_lines_count      = 500,
      max_labels_count     = 500,
      max_boxes_count      = 50,
+     max_tables_count     = 5,
      calc_on_every_tick   = false)
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -18,6 +19,7 @@ string G_SESS = "Session"
 string G_VA   = "Value area (LTF volume)"
 string G_SIG  = "Signals"
 string G_VIS  = "Visuals"
+string G_TF   = "Timeframe"
 string G_ALR  = "Alerts"
 
 i_sess      = input.session("0930-1600", "Session (chart timeframe)", group=G_SESS,
@@ -35,7 +37,10 @@ i_showLevels= input.bool(true, "Show FC / VA levels (dotted lines)", group=G_VIS
 i_showSig   = input.bool(true, "Show signal markers & labels", group=G_VIS)
 i_showInv   = input.bool(true, "Show invalidation markers", group=G_VIS)
 i_showRt    = input.bool(true, "Show retest markers", group=G_VIS)
-i_extend    = input.bool(true, "Extend level lines through session", group=G_VIS)
+i_extend    = input.bool(true, "Grow level lines to session end (time-based)", group=G_VIS,
+     tooltip="When on, FC/VA lines extend to the right until the session ends (no infinite extend past RTH).")
+i_showTfWarn = input.bool(true, "Warn when chart TF > M15", group=G_TF)
+i_warnColor  = input.color(color.new(color.red, 0), "Warning accent", group=G_TF)
 
 i_strictRev = input.bool(false, "Stricter reversal: require prior close outside VA", group=G_SIG,
      tooltip="If true: bearish reversal needs prior close > VAH; bullish reversal needs prior close < VAL.")
@@ -56,6 +61,12 @@ bool newSess = inSess and not inSess[1]
 float ltfSec = timeframe.in_seconds(i_ltf)
 bool ltfOk = ltfSec < chartSec
 
+// M1 / M5 / M15 only — above M15: show warning; skip LTF profile (lighter + clearer)
+float m15Sec = timeframe.in_seconds("15")
+bool tfChartOk = timeframe.isintraday and chartSec > 0 and chartSec <= m15Sec
+
+bgcolor(i_showTfWarn and not tfChartOk ? color.new(i_warnColor, 93) : na, title="TF guard")
+
 // ══════════════════════════════════════════════════════════════════════════════
 // VALUE AREA — LTF reconstruction (non-repainting)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -71,6 +82,7 @@ var float accL = na
 var array<float> ltfTP = array.new_float(0)
 var array<float> ltfVL = array.new_float(0)
 var bool  sessVAComputed = false
+var int   rngStartTime = na
 
 var float fcHigh = na
 var float fcLow = na
@@ -127,13 +139,16 @@ if newSess
     array.clear(ltfTP)
     array.clear(ltfVL)
     sessVAComputed := false
+    rngStartTime := na
     fcHigh := na
     fcLow := na
     vah := na
     val := na
 
-if inSess and barstate.isconfirmed and ltfOk and not sessVAComputed
+if tfChartOk and inSess and barstate.isconfirmed and ltfOk and not sessVAComputed
     if opBars < openBarsNeeded
+        if na(rngStartTime)
+            rngStartTime := time
         accH := na(accH) ? high : math.max(accH, high)
         accL := na(accL) ? low : math.min(accL, low)
         // v6: no barmerge gaps/lookahead; optional args per language reference.
@@ -233,13 +248,14 @@ bool sigRetestBull = vaReady and inSess and barstate.isconfirmed and bullBreakAc
 bool sigRetestBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and not na(lastBearBoBar) and bar_index > lastBearBoBar and high >= val and close < val
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LEVEL LINES (dotted)
+// LEVEL LINES — dotted; xloc.bar_time so M1/M5/M15 align; stop growing at session end
 // ══════════════════════════════════════════════════════════════════════════════
 var line lnFcH = na
 var line lnFcL = na
 var line lnVah = na
 var line lnVal = na
-var int  lvlStart = na
+
+var table tfWarnTable = na
 
 f_delLine(line l) =>
     if not na(l)
@@ -254,20 +270,33 @@ if newSess
     lnFcL := na
     lnVah := na
     lnVal := na
-    lvlStart := na
 
-if i_showLevels and vaReady and inSess
-    if na(lvlStart)
-        lvlStart := bar_index
-        lnFcH := line.new(lvlStart, fcHigh, bar_index, fcHigh, extend=i_extend ? extend.right : extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
-        lnFcL := line.new(lvlStart, fcLow, bar_index, fcLow, extend=i_extend ? extend.right : extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
-        lnVah := line.new(lvlStart, vah, bar_index, vah, extend=i_extend ? extend.right : extend.none, color=color.new(color.teal, 0), width=2, style=line.style_dotted)
-        lnVal := line.new(lvlStart, val, bar_index, val, extend=i_extend ? extend.right : extend.none, color=color.new(color.orange, 0), width=2, style=line.style_dotted)
-    else
-        line.set_x2(lnFcH, bar_index)
-        line.set_x2(lnFcL, bar_index)
-        line.set_x2(lnVah, bar_index)
-        line.set_x2(lnVal, bar_index)
+if barstate.islast and i_showTfWarn
+    if not tfChartOk
+        if na(tfWarnTable)
+            tfWarnTable := table.new(position.top_right, 1, 4, border_width=1, frame_color=i_warnColor,
+                 bgcolor=color.new(color.black, 75))
+        table.cell(tfWarnTable, 0, 0, "First Candle Value", text_color=color.white, text_size=size.normal)
+        table.cell(tfWarnTable, 0, 1, "Use M1, M5, or M15", text_color=color.white, text_size=size.small)
+        table.cell(tfWarnTable, 0, 2, "Above M15: logic disabled", text_color=color.new(color.silver, 0), text_size=size.small)
+        table.cell(tfWarnTable, 0, 3, "Dotted lines = opening range", text_color=color.new(color.silver, 0), text_size=size.small)
+    else if not na(tfWarnTable)
+        table.delete(tfWarnTable)
+        tfWarnTable := na
+
+bool growLines = i_extend and inSess
+
+if i_showLevels and tfChartOk and vaReady and not na(rngStartTime)
+    if na(lnFcH)
+        lnFcH := line.new(rngStartTime, fcHigh, time_close, fcHigh, xloc=xloc.bar_time, extend=extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
+        lnFcL := line.new(rngStartTime, fcLow, time_close, fcLow, xloc=xloc.bar_time, extend=extend.none, color=color.new(color.gray, 0), width=1, style=line.style_dotted)
+        lnVah := line.new(rngStartTime, vah, time_close, vah, xloc=xloc.bar_time, extend=extend.none, color=color.new(color.teal, 0), width=2, style=line.style_dotted)
+        lnVal := line.new(rngStartTime, val, time_close, val, xloc=xloc.bar_time, extend=extend.none, color=color.new(color.orange, 0), width=2, style=line.style_dotted)
+    else if growLines
+        line.set_x2(lnFcH, time_close)
+        line.set_x2(lnFcL, time_close)
+        line.set_x2(lnVah, time_close)
+        line.set_x2(lnVal, time_close)
         line.set_y1(lnFcH, fcHigh)
         line.set_y2(lnFcH, fcHigh)
         line.set_y1(lnFcL, fcLow)
@@ -319,8 +348,8 @@ plot(vaReady ? fcLow : na, title="FC Low", display=display.data_window, color=co
 plot(vaReady ? vah : na, title="VAH", display=display.data_window, color=color.new(color.teal, 100))
 plot(vaReady ? val : na, title="VAL", display=display.data_window, color=color.new(color.orange, 100))
 
-if barstate.islastconfirmedhistory and not ltfOk
+if barstate.islastconfirmedhistory and tfChartOk and not ltfOk
     label.new(bar_index, high, "FCV: Set LTF lower than chart TF for volume profile.", style=label.style_label_lower_left, color=color.orange, textcolor=color.white, size=size.small)
 
-if barstate.islastconfirmedhistory and not openTfOk
+if barstate.islastconfirmedhistory and tfChartOk and not openTfOk
     label.new(bar_index, low, "FCV: Opening TF should be ≥ chart TF (e.g. 15m open on 5m chart).", style=label.style_label_upper_left, color=color.purple, textcolor=color.white, size=size.small)

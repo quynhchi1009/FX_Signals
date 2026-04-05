@@ -1,11 +1,5 @@
 //@version=6
-// ══════════════════════════════════════════════════════════════════════════════
-// First Candle Value Area — STRATEGY (Pine v6)
-// Same signal engine as the indicator; backtestable with configurable entries,
-// stops, targets, trailing, breakeven, and session trade limits.
-// Non-repainting: calc_on_every_tick false, orders on bar close, security lookahead off.
-// ══════════════════════════════════════════════════════════════════════════════
-strategy("First Candle Value [Strategy]",
+strategy("First Candle Value [Strategy] — Opening M15 Lines",
      overlay                   = true,
      pyramiding                = 0,
      calc_on_every_tick        = false,
@@ -16,13 +10,13 @@ strategy("First Candle Value [Strategy]",
      commission_type           = strategy.commission.percent,
      commission_value          = 0.0,
      slippage                  = 0,
-     max_lines_count           = 300,
-     max_labels_count          = 300)
+     max_lines_count           = 500,
+     max_labels_count          = 500)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// INPUTS — SESSION & VA (mirror indicator)
+// INPUTS
 // ══════════════════════════════════════════════════════════════════════════════
-string G_SESS = "Session & value area"
+string G_SESS = "Session & opening range"
 string G_ENT  = "Entries"
 string G_SL   = "Stop loss"
 string G_TP   = "Take profit"
@@ -30,175 +24,176 @@ string G_TR   = "Trailing"
 string G_RISK = "Risk management"
 string G_VIS  = "Visuals"
 
-i_sess      = input.session("0930-1600", "Session (chart timeframe)", group=G_SESS)
-i_tz        = input.string("America/New_York", "Session timezone", group=G_SESS)
-i_openTf    = input.timeframe("15", "Opening candle length", group=G_SESS)
-i_ltf       = input.timeframe("1", "LTF for volume profile", group=G_SESS)
-i_vaPct     = input.float(70.0, "Value area volume %", minval=50.0, maxval=95.0, step=0.5, group=G_SESS)
-i_bins      = input.int(48, "Histogram bins", minval=12, maxval=200, group=G_SESS)
-i_strictRev = input.bool(false, "Stricter reversal (prior close outside VA)", group=G_SESS)
+i_sess          = input.session("0930-1600", "New York session", group=G_SESS)
+i_tz            = input.string("America/New_York", "Session timezone", group=G_SESS)
+i_strictRev     = input.bool(false, "Stricter reversal (prior close outside range)", group=G_SESS,
+     tooltip="Opening high/low = first M15 candle of this session (e.g. 09:30–09:45 NY). Use M1/M5/M15 chart; backtest on M15.")
 
-i_useBO     = input.bool(true, "Trade breakouts", group=G_ENT)
-i_useRev    = input.bool(true, "Trade reversals", group=G_ENT)
-i_long      = input.bool(true, "Allow longs", group=G_ENT)
-i_short     = input.bool(true, "Allow shorts", group=G_ENT)
+i_useBO         = input.bool(true, "Trade breakouts", group=G_ENT)
+i_useRev        = input.bool(true, "Trade reversals", group=G_ENT)
+i_long          = input.bool(true, "Allow longs", group=G_ENT)
+i_short         = input.bool(true, "Allow shorts", group=G_ENT)
 
-i_slMode    = input.string("Opposite VA", "Stop mode", group=G_SL,
+i_slMode        = input.string("First candle", "Stop mode", group=G_SL,
      options=["Opposite VA", "First candle", "Signal bar", "Retest candle", "ATR"])
-i_atrLen    = input.int(14, "ATR length (ATR stop)", minval=1, group=G_SL)
-i_atrStopM  = input.float(1.5, "ATR × (stop distance)", minval=0.1, step=0.1, group=G_SL)
-i_slBuffer  = input.float(0.0, "Extra stop buffer (× mintick)", minval=0.0, step=1.0, group=G_SL)
+i_atrLen        = input.int(14, "ATR length (ATR stop)", minval=1, group=G_SL)
+i_atrStopM      = input.float(1.5, "ATR × (stop distance)", minval=0.1, step=0.1, group=G_SL)
+i_slBuffer      = input.float(0.0, "Extra stop buffer (× mintick)", minval=0.0, step=1.0, group=G_SL)
 
-i_tpMode    = input.string("Fixed R multiple", "Take-profit mode", group=G_TP,
+i_tpMode        = input.string("Fixed R multiple", "Take-profit mode", group=G_TP,
      options=["Fixed R multiple", "Opposite first candle", "Trailing only", "Partial R + trail"])
-i_tpR       = input.float(2.0, "TP: R multiple (full or first leg)", minval=0.1, step=0.1, group=G_TP)
-i_partialPct= input.float(50.0, "Partial exit % of position", minval=5.0, maxval=95.0, step=5.0, group=G_TP)
-i_partialR  = input.float(1.0, "Partial at R", minval=0.1, step=0.1, group=G_TP)
+i_tpR           = input.float(2.0, "TP: R multiple (full or first leg)", minval=0.1, step=0.1, group=G_TP)
+i_partialPct    = input.float(50.0, "Partial exit % of position", minval=5.0, maxval=95.0, step=5.0, group=G_TP)
+i_partialR      = input.float(1.0, "Partial at R", minval=0.1, step=0.1, group=G_TP)
 
-i_trailOn   = input.bool(true, "Use trailing (after TP modes that keep a runner)", group=G_TR,
-     tooltip="Applies to Trailing only, Partial R + trail, and can tighten stops for Fixed R / Opposite FC when enabled below.")
-i_trailMode = input.string("Previous candle", "Trail mode", group=G_TR,
+i_trailOn       = input.bool(true, "Use trailing", group=G_TR)
+i_trailMode     = input.string("Previous candle", "Trail mode", group=G_TR,
      options=["Off", "Previous candle", "Swing window", "ATR"])
-i_swingLB   = input.int(5, "Swing trail: lookback bars", minval=2, maxval=100, group=G_TR)
-i_trailAtrM = input.float(1.0, "ATR trail ×", minval=0.1, step=0.1, group=G_TR)
-i_trailBuf  = input.float(0.0, "Trail buffer (× mintick)", minval=0.0, step=1.0, group=G_TR)
+i_swingLB       = input.int(5, "Swing trail: lookback bars", minval=2, maxval=100, group=G_TR)
+i_trailAtrM     = input.float(1.0, "ATR trail ×", minval=0.1, step=0.1, group=G_TR)
+i_trailBuf      = input.float(0.0, "Trail buffer (× mintick)", minval=0.0, step=1.0, group=G_TR)
 
-i_beR       = input.float(1.0, "Move stop to breakeven after +R (0 = off)", minval=0.0, step=0.1, group=G_RISK)
-i_onePerDir = input.bool(true, "One trade per direction per session", group=G_RISK)
-i_oneTotal  = input.bool(false, "One trade total per session", group=G_RISK)
+i_beR           = input.float(1.0, "Move stop to breakeven after +R (0 = off)", minval=0.0, step=0.1, group=G_RISK)
+i_onePerDir     = input.bool(true, "One trade per direction per session", group=G_RISK)
+i_oneTotal      = input.bool(false, "One trade total per session", group=G_RISK)
 
-i_showLbl   = input.bool(true, "Show entry labels", group=G_VIS)
+i_showOpenLines = input.bool(true, "Show opening M15 high/low lines", group=G_VIS)
+i_showLbl       = input.bool(true, "Show entry labels", group=G_VIS)
+i_showTfWarn    = input.bool(true, "Show timeframe warning label", group=G_VIS)
+
+i_colHigh       = input.color(color.new(color.yellow, 0), "Opening high line", group=G_VIS)
+i_colLow        = input.color(color.new(color.silver, 0), "Opening low line", group=G_VIS)
+i_colWarn       = input.color(color.new(color.red, 0), "Warning color", group=G_VIS)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SESSION / TF
+// TIMEFRAME RULES
+// - Lines: M1, M5, M15 (chart period ≤ 15m)
+// - Strategy entries / exits: M15 only (matches “first M15 candle” backtest)
+// - Charts > M15: warning table + tint; logic does not run
 // ══════════════════════════════════════════════════════════════════════════════
-float chartSec = timeframe.in_seconds()
-float openSec  = timeframe.in_seconds(i_openTf)
-int   openBarsNeeded = chartSec > 0 ? int(math.max(1, math.round(openSec / chartSec))) : 1
-bool inSess = not na(time(timeframe.period, i_sess, i_tz))
-bool newSess = inSess and not inSess[1]
-float ltfSec = timeframe.in_seconds(i_ltf)
-bool ltfOk = ltfSec < chartSec
+float chartSec   = timeframe.in_seconds()
+float m15Sec     = timeframe.in_seconds("15")
+
+bool inSess      = not na(time(timeframe.period, i_sess, i_tz))
+bool newSess     = inSess and not inSess[1]
+
+bool tfDisplayOk = timeframe.isintraday and chartSec > 0 and chartSec <= m15Sec
+bool tfTradeOk   = timeframe.isintraday and chartSec == m15Sec
+bool scriptActive = tfDisplayOk
 
 float atrV = ta.atr(i_atrLen)
-float buf = i_slBuffer * syminfo.mintick
+float buf  = i_slBuffer * syminfo.mintick
 float tbuf = i_trailBuf * syminfo.mintick
 
+// Trailing anchors — computed every bar (inline series; strategy() must not call user fns only inside branches — CW10003).
+float trailFloorLong = -1e100
+float trailCeilShort = 1e100
+if i_trailOn
+    if i_trailMode == "Previous candle"
+        trailFloorLong := low[1] - tbuf
+        trailCeilShort := high[1] + tbuf
+    else if i_trailMode == "Swing window"
+        trailFloorLong := ta.lowest(low, i_swingLB)[1] - tbuf
+        trailCeilShort := ta.highest(high, i_swingLB)[1] + tbuf
+    else if i_trailMode == "ATR"
+        trailFloorLong := close - atrV * i_trailAtrM
+        trailCeilShort := close + atrV * i_trailAtrM
+
+// First NY-session 15m slot (e.g. 09:30 bar) — always 15m, independent of chart TF
+int openBucketTime = time("15", i_sess, i_tz)
+bool inOpenBucket  = not na(openBucketTime)
+
 // ══════════════════════════════════════════════════════════════════════════════
-// OPENING + VA (same algorithm as indicator)
+// OPENING M15 RANGE STATE
 // ══════════════════════════════════════════════════════════════════════════════
-var int   opBars = 0
+var int   firstBucketTime = na
+var bool  firstBucketLocked = false
+var bool  sessRangeReady = false
+
 var float accH = na
 var float accL = na
-var array<float> ltfTP = array.new_float(0)
-var array<float> ltfVL = array.new_float(0)
-var bool  sessVAComputed = false
-
 var float fcHigh = na
-var float fcLow = na
-var float vah = na
-var float val = na
+var float fcLow  = na
 
-f_vaFromBins(float lo, float hi, array<float> binVol, float pct) =>
-    int n = array.size(binVol)
-    float vahOut = na
-    float valOut = na
-    if n > 0 and not na(lo) and not na(hi) and hi > lo
-        float total = 0.0
-        for b = 0 to n - 1
-            total += array.get(binVol, b)
-        if total > 0
-            int poc = 0
-            float best = -1.0
-            for b = 0 to n - 1
-                float w = array.get(binVol, b)
-                if w > best
-                    best := w
-                    poc := b
-            float cum = array.get(binVol, poc)
-            int loB = poc
-            int hiB = poc
-            float target = total * (pct / 100.0)
-            int guard = 0
-            while cum < target and (loB > 0 or hiB < n - 1) and guard < n + 5
-                guard += 1
-                float vLo = loB > 0 ? array.get(binVol, loB - 1) : 0.0
-                float vHi = hiB < n - 1 ? array.get(binVol, hiB + 1) : 0.0
-                if vLo <= 0 and vHi <= 0
-                    break
-                if vHi >= vLo
-                    hiB += 1
-                    cum += vHi
-                else
-                    loB -= 1
-                    cum += vLo
-            float step = (hi - lo) / n
-            valOut := lo + loB * step
-            vahOut := lo + (hiB + 1) * step
-        else
-            float mid = (lo + hi) * 0.5
-            float w = (hi - lo) * (pct / 100.0) * 0.5
-            valOut := mid - w
-            vahOut := mid + w
-    [valOut, vahOut]
+var line  openHighLine = na
+var line  openLowLine  = na
+var table tfWarnTable  = na
 
-if newSess
-    opBars := 0
-    accH := na
-    accL := na
-    array.clear(ltfTP)
-    array.clear(ltfVL)
-    sessVAComputed := false
-    fcHigh := na
-    fcLow := na
-    vah := na
-    val := na
-
-if inSess and barstate.isconfirmed and ltfOk and not sessVAComputed
-    if opBars < openBarsNeeded
-        accH := na(accH) ? high : math.max(accH, high)
-        accL := na(accL) ? low : math.min(accL, low)
-        // v6: no barmerge gaps/lookahead; optional args per language reference.
-        [_oa, hArr, lArr, cArr, vArr] = request.security_lower_tf(syminfo.tickerid, i_ltf, [open, high, low, close, volume], ignore_invalid_timeframe = true)
-        int m = array.size(hArr)
-        if m > 0
-            for i = 0 to m - 1
-                float th = array.get(hArr, i)
-                float tl = array.get(lArr, i)
-                float tc = array.get(cArr, i)
-                float tv = array.get(vArr, i)
-                float tp = (th + tl + tc) / 3.0
-                array.push(ltfTP, tp)
-                array.push(ltfVL, tv)
-        opBars += 1
-    if opBars == openBarsNeeded
-        fcHigh := accH
-        fcLow := accL
-        float lo = accL
-        float hi = accH
-        int nb = i_bins
-        array<float> bins = array.new_float(nb, 0.0)
-        if hi > lo and array.size(ltfTP) > 0
-            int np = array.size(ltfTP)
-            for i = 0 to np - 1
-                float px = array.get(ltfTP, i)
-                float vv = array.get(ltfVL, i)
-                if not na(px) and not na(vv) and vv > 0
-                    int idx = int(math.floor((px - lo) / (hi - lo) * nb))
-                    idx := math.max(0, math.min(nb - 1, idx))
-                    array.set(bins, idx, array.get(bins, idx) + vv)
-            [vLo, vHi] = f_vaFromBins(lo, hi, bins, i_vaPct)
-            val := vLo
-            vah := vHi
-        else
-            float mid = (lo + hi) * 0.5
-            float w = (hi - lo) * (i_vaPct / 100.0) * 0.5
-            val := mid - w
-            vah := mid + w
-        sessVAComputed := true
+f_deleteLine(line ln) =>
+    if not na(ln)
+        line.delete(ln)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SIGNALS (same as indicator)
+// TIMEFRAME WARNING (table + chart tint) — TF > M15 or non-intraday
+// ══════════════════════════════════════════════════════════════════════════════
+bgcolor(i_showTfWarn and not tfDisplayOk ? color.new(i_colWarn, 93) : na, title="TF guard")
+
+if barstate.islast and i_showTfWarn
+    if not tfDisplayOk
+        if na(tfWarnTable)
+            tfWarnTable := table.new(position.top_right, 1, 4, border_width=1, frame_color=i_colWarn,
+                 bgcolor=color.new(color.black, 75))
+        table.cell(tfWarnTable, 0, 0, "First Candle Value", text_color=color.white, text_size=size.normal)
+        table.cell(tfWarnTable, 0, 1, "Switch to M1, M5, or M15", text_color=color.white, text_size=size.small)
+        table.cell(tfWarnTable, 0, 2, "Lines = first NY M15 high/low", text_color=color.new(color.silver, 0), text_size=size.small)
+        table.cell(tfWarnTable, 0, 3, "Strategy Tester: chart M15", text_color=color.new(color.silver, 0), text_size=size.small)
+    else if not na(tfWarnTable)
+        table.delete(tfWarnTable)
+        tfWarnTable := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SESSION RESET
+// ══════════════════════════════════════════════════════════════════════════════
+if newSess and scriptActive
+    firstBucketTime   := openBucketTime
+    firstBucketLocked := false
+    sessRangeReady    := false
+
+    accH := na
+    accL := na
+    fcHigh := na
+    fcLow  := na
+
+    f_deleteLine(openHighLine)
+    f_deleteLine(openLowLine)
+    openHighLine := na
+    openLowLine  := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BUILD FIRST M15 CANDLE OF NEW YORK SESSION
+// Works consistently on M1 / M5 / M15 because it uses the actual M15 time bucket
+// ══════════════════════════════════════════════════════════════════════════════
+if scriptActive and inSess and barstate.isconfirmed and not na(firstBucketTime)
+    // Still inside the first M15 bucket
+    if inOpenBucket and openBucketTime == firstBucketTime and not firstBucketLocked
+        accH := na(accH) ? high : math.max(accH, high)
+        accL := na(accL) ? low  : math.min(accL, low)
+
+    // First M15 bucket has just ended -> lock the range once
+    if not firstBucketLocked and inOpenBucket and openBucketTime != firstBucketTime
+        fcHigh := accH
+        fcLow  := accL
+        sessRangeReady := not na(fcHigh) and not na(fcLow)
+        firstBucketLocked := true
+
+        if i_showOpenLines and sessRangeReady
+            openHighLine := line.new(firstBucketTime, fcHigh, time_close, fcHigh, xloc=xloc.bar_time, extend=extend.none, color=i_colHigh, style=line.style_dotted, width=1)
+            openLowLine  := line.new(firstBucketTime, fcLow,  time_close, fcLow,  xloc=xloc.bar_time, extend=extend.none, color=i_colLow,  style=line.style_dotted, width=1)
+
+// Keep extending lines until end of New York session
+if scriptActive and inSess and sessRangeReady and i_showOpenLines
+    if not na(openHighLine)
+        line.set_x2(openHighLine, time_close)
+        line.set_y1(openHighLine, fcHigh)
+        line.set_y2(openHighLine, fcHigh)
+    if not na(openLowLine)
+        line.set_x2(openLowLine, time_close)
+        line.set_y1(openLowLine, fcLow)
+        line.set_y2(openLowLine, fcLow)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNALS
+// Using opening M15 high/low
 // ══════════════════════════════════════════════════════════════════════════════
 var bool extUp = false
 var bool extDown = false
@@ -207,7 +202,7 @@ var bool bearBreakActive = false
 var int  lastBullBoBar = na
 var int  lastBearBoBar = na
 
-if newSess
+if newSess and scriptActive
     extUp := false
     extDown := false
     bullBreakActive := false
@@ -215,19 +210,19 @@ if newSess
     lastBullBoBar := na
     lastBearBoBar := na
 
-bool vaReady = sessVAComputed and not na(vah) and not na(val) and not na(fcHigh) and not na(fcLow)
+bool rangeReady = scriptActive and sessRangeReady and not na(fcHigh) and not na(fcLow)
 
-if vaReady and inSess
-    extUp := extUp or high > vah
-    extDown := extDown or low < val
+if rangeReady and inSess
+    extUp := extUp or high > fcHigh
+    extDown := extDown or low < fcLow
 
-bool prevCloseAboveVAH = close[1] > vah
-bool prevCloseBelowVAL = close[1] < val
+bool prevCloseAboveHigh = rangeReady ? close[1] > fcHigh : false
+bool prevCloseBelowLow  = rangeReady ? close[1] < fcLow : false
 
-bool sigBullBO = vaReady and inSess and barstate.isconfirmed and close > vah and close[1] <= vah
-bool sigBearBO = vaReady and inSess and barstate.isconfirmed and close < val and close[1] >= val
-bool sigBearRev = vaReady and inSess and barstate.isconfirmed and extUp and close >= val and close <= vah and (not i_strictRev or prevCloseAboveVAH)
-bool sigBullRev = vaReady and inSess and barstate.isconfirmed and extDown and close >= val and close <= vah and (not i_strictRev or prevCloseBelowVAL)
+bool sigBullBO  = rangeReady and inSess and barstate.isconfirmed and close > fcHigh and close[1] <= fcHigh
+bool sigBearBO  = rangeReady and inSess and barstate.isconfirmed and close < fcLow and close[1] >= fcLow
+bool sigBearRev = rangeReady and inSess and barstate.isconfirmed and extUp and close <= fcHigh and close >= fcLow and (not i_strictRev or prevCloseAboveHigh)
+bool sigBullRev = rangeReady and inSess and barstate.isconfirmed and extDown and close <= fcHigh and close >= fcLow and (not i_strictRev or prevCloseBelowLow)
 
 if sigBullBO
     bullBreakActive := true
@@ -236,19 +231,19 @@ if sigBearBO
     bearBreakActive := true
     lastBearBoBar := bar_index
 
-bool invBull = vaReady and inSess and barstate.isconfirmed and bullBreakActive and close >= val and close <= vah
-bool invBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and close >= val and close <= vah
+bool invBull = rangeReady and inSess and barstate.isconfirmed and bullBreakActive and close <= fcHigh and close >= fcLow
+bool invBear = rangeReady and inSess and barstate.isconfirmed and bearBreakActive and close <= fcHigh and close >= fcLow
 if invBull
     bullBreakActive := false
 if invBear
     bearBreakActive := false
 
-bool sigRetestBull = vaReady and inSess and barstate.isconfirmed and bullBreakActive and not na(lastBullBoBar) and bar_index > lastBullBoBar and low <= vah and close > vah
-bool sigRetestBear = vaReady and inSess and barstate.isconfirmed and bearBreakActive and not na(lastBearBoBar) and bar_index > lastBearBoBar and high >= val and close < val
+bool sigRetestBull = rangeReady and inSess and barstate.isconfirmed and bullBreakActive and not na(lastBullBoBar) and bar_index > lastBullBoBar and low <= fcHigh and close > fcHigh
+bool sigRetestBear = rangeReady and inSess and barstate.isconfirmed and bearBreakActive and not na(lastBearBoBar) and bar_index > lastBearBoBar and high >= fcLow and close < fcLow
 
 var float sessRetestLow = na
 var float sessRetestHigh = na
-if newSess
+if newSess and scriptActive
     sessRetestLow := na
     sessRetestHigh := na
 if sigRetestBull
@@ -263,7 +258,7 @@ var bool tradedLongSess = false
 var bool tradedShortSess = false
 var bool tradedAnySess = false
 
-if newSess
+if newSess and scriptActive
     tradedLongSess := false
     tradedShortSess := false
     tradedAnySess := false
@@ -275,10 +270,10 @@ bool wantShortBO = i_useBO and i_short and sigBearBO
 bool wantLongRV  = i_useRev and i_long and sigBullRev
 bool wantShortRV = i_useRev and i_short and sigBearRev
 
-bool allowLong = flat and inSess and vaReady and not (i_oneTotal and tradedAnySess) and not (i_onePerDir and tradedLongSess)
-bool allowShort = flat and inSess and vaReady and not (i_oneTotal and tradedAnySess) and not (i_onePerDir and tradedShortSess)
+bool allowLong  = tfTradeOk and flat and inSess and rangeReady and not (i_oneTotal and tradedAnySess) and not (i_onePerDir and tradedLongSess)
+bool allowShort = tfTradeOk and flat and inSess and rangeReady and not (i_oneTotal and tradedAnySess) and not (i_onePerDir and tradedShortSess)
 
-bool doLong = (wantLongBO or wantLongRV) and allowLong
+bool doLong  = (wantLongBO or wantLongRV) and allowLong
 bool doShort = (wantShortBO or wantShortRV) and allowShort
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -287,7 +282,7 @@ bool doShort = (wantShortBO or wantShortRV) and allowShort
 f_slLong(float ep, float sigLow) =>
     float s = na
     if i_slMode == "Opposite VA"
-        s := val - buf
+        s := fcLow - buf
     else if i_slMode == "First candle"
         s := fcLow - buf
     else if i_slMode == "Signal bar"
@@ -301,7 +296,7 @@ f_slLong(float ep, float sigLow) =>
 f_slShort(float ep, float sigHigh) =>
     float s = na
     if i_slMode == "Opposite VA"
-        s := vah + buf
+        s := fcHigh + buf
     else if i_slMode == "First candle"
         s := fcHigh + buf
     else if i_slMode == "Signal bar"
@@ -334,30 +329,8 @@ f_tpShort(float ep, float sl) =>
         t := na
     t
 
-f_trailStopLong(float baseSl) =>
-    float out = baseSl
-    if i_trailOn and i_trailMode != "Off"
-        if i_trailMode == "Previous candle"
-            out := math.max(out, low[1] - tbuf)
-        else if i_trailMode == "Swing window"
-            out := math.max(out, ta.lowest(low, i_swingLB)[1] - tbuf)
-        else if i_trailMode == "ATR"
-            out := math.max(out, close - atrV * i_trailAtrM)
-    out
-
-f_trailStopShort(float baseSl) =>
-    float out = baseSl
-    if i_trailOn and i_trailMode != "Off"
-        if i_trailMode == "Previous candle"
-            out := math.min(out, high[1] + tbuf)
-        else if i_trailMode == "Swing window"
-            out := math.min(out, ta.highest(high, i_swingLB)[1] + tbuf)
-        else if i_trailMode == "ATR"
-            out := math.min(out, close + atrV * i_trailAtrM)
-    out
-
 // ══════════════════════════════════════════════════════════════════════════════
-// POSITION STATE — initial SL frozen at entry bar (non-repaint)
+// POSITION STATE
 // ══════════════════════════════════════════════════════════════════════════════
 var float longInitialSl = na
 var float shortInitialSl = na
@@ -370,6 +343,9 @@ if flat
     longRisk := na
     shortRisk := na
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ENTRIES
+// ══════════════════════════════════════════════════════════════════════════════
 if doLong
     float ep = close
     float sl0 = f_slLong(ep, low)
@@ -397,15 +373,16 @@ if doShort
             label.new(bar_index, high, "S " + (wantShortBO ? "BO" : "Rev"), style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// MANAGE OPEN POSITIONS (exits on close)
+// POSITION MANAGEMENT
 // ══════════════════════════════════════════════════════════════════════════════
-if barstate.isconfirmed
+if barstate.isconfirmed and tfTradeOk
     if strategy.position_size > 0 and not na(longInitialSl)
         float ep = strategy.position_avg_price
         float risk = nz(longRisk, ep - longInitialSl)
         float sl = longInitialSl
         if i_beR > 0 and risk > 0 and close >= ep + risk * i_beR
             sl := math.max(sl, ep)
+
         float tpFull = f_tpLong(ep, longInitialSl)
         float tpPart = risk > 0 ? ep + risk * i_partialR : na
 
@@ -413,19 +390,18 @@ if barstate.isconfirmed
             float slTb = longInitialSl
             if i_beR > 0 and risk > 0 and close >= ep + risk * i_beR
                 slTb := math.max(slTb, ep)
-            float slT = f_trailStopLong(slTb)
+            float slT = math.max(slTb, trailFloorLong)
             strategy.exit("LX", from_entry="L", stop=slT)
         else if i_tpMode == "Partial R + trail" and risk > 0
             float slBase = longInitialSl
             if i_beR > 0 and risk > 0 and close >= ep + risk * i_beR
                 slBase := math.max(slBase, ep)
             float slP = slBase
-            float slR = f_trailStopLong(slBase)
+            float slR = math.max(slBase, trailFloorLong)
             strategy.exit("LXp", from_entry="L", qty_percent=i_partialPct, limit=tpPart, stop=slP)
             strategy.exit("LXr", from_entry="L", stop=slR)
         else
-            if i_trailOn and i_trailMode != "Off"
-                sl := f_trailStopLong(sl)
+            sl := math.max(sl, trailFloorLong)
             strategy.exit("LX", from_entry="L", limit=tpFull, stop=sl)
 
     if strategy.position_size < 0 and not na(shortInitialSl)
@@ -434,6 +410,7 @@ if barstate.isconfirmed
         float sl = shortInitialSl
         if i_beR > 0 and risk > 0 and close <= ep - risk * i_beR
             sl := math.min(sl, ep)
+
         float tpFull = f_tpShort(ep, shortInitialSl)
         float tpPart = risk > 0 ? ep - risk * i_partialR : na
 
@@ -441,32 +418,20 @@ if barstate.isconfirmed
             float slTb = shortInitialSl
             if i_beR > 0 and risk > 0 and close <= ep - risk * i_beR
                 slTb := math.min(slTb, ep)
-            float slT = f_trailStopShort(slTb)
+            float slT = math.min(slTb, trailCeilShort)
             strategy.exit("SX", from_entry="S", stop=slT)
         else if i_tpMode == "Partial R + trail" and risk > 0
             float slBase = shortInitialSl
             if i_beR > 0 and risk > 0 and close <= ep - risk * i_beR
                 slBase := math.min(slBase, ep)
             float slP = slBase
-            float slR = f_trailStopShort(slBase)
+            float slR = math.min(slBase, trailCeilShort)
             strategy.exit("SXp", from_entry="S", qty_percent=i_partialPct, limit=tpPart, stop=slP)
             strategy.exit("SXr", from_entry="S", stop=slR)
         else
-            if i_trailOn and i_trailMode != "Off"
-                sl := f_trailStopShort(sl)
+            sl := math.min(sl, trailCeilShort)
             strategy.exit("SX", from_entry="S", limit=tpFull, stop=sl)
 
-// ══════════════════════════════════════════════════════════════════════════════
-// LIMITATIONS (read before live trading)
-// ══════════════════════════════════════════════════════════════════════════════
-// • Value area is an LTF volume histogram proxy, not exchange tick TPO; results
-//   differ from professional VP tools when intra-bar volume distribution skews.
-// • request.security_lower_tf (v6) returns LTF bars per chart bar; no barmerge
-//   gaps/lookahead — intrabars are historical to the bar. We accumulate across
-//   opening session bars when LTF < chart TF and opening TF ≥ chart TF.
-// • “Retest candle” stop uses the last retest low/high seen this session before
-//   entry; if none yet, it falls back to the entry bar’s low/high.
-// • Partial + trail: two strategy.exit brackets split qty; behaviour matches
-//   TradingView’s bracket semantics (see docs for partial fills).
-// • No martingale / averaging / lookahead; entries and dynamic exits use the
-//   bar’s OHLC after close when process_orders_on_close is true.
+// Data window only
+plot(scriptActive and sessRangeReady ? fcHigh : na, "Opening High", color=color.new(i_colHigh, 100), display=display.data_window)
+plot(scriptActive and sessRangeReady ? fcLow  : na, "Opening Low",  color=color.new(i_colLow, 100),  display=display.data_window)

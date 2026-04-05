@@ -1,0 +1,87 @@
+//@version=5
+indicator("SMC ICT Filters Dashboard", overlay=true, max_labels_count=500)
+
+// Inputs
+emaFast = input.int(20, "EMA Fast")
+emaSlow = input.int(50, "EMA Slow")
+macdFast = input.int(12, "MACD Fast")
+macdSlow = input.int(26, "MACD Slow")
+macdSig = input.int(9, "MACD Signal")
+rsiLen = input.int(21, "RSI Length")
+rsiBull = input.int(50, "RSI Bull Level")
+adxLen = input.int(14, "ADX Length")
+adxReady = input.int(25, "ADX Ready")
+superPer = input.int(10, "Supertrend Period")
+superMult = input.float(3.0, "Supertrend Multiplier")
+htf = input.timeframe("D", "HTF Structure")
+
+// Calculations
+emaF = ta.ema(close, emaFast)
+emaS = ta.ema(close, emaSlow)
+emaBull = close > emaF and emaF > emaS
+emaSig = emaBull ? "BUY" : "SELL"
+
+[macdLine, _, _] = ta.macd(close, macdFast, macdSlow, macdSig)
+macdBull = macdLine > 0
+macdSigStr = macdBull ? "BUY" : "SELL"
+
+rsiVal = ta.rsi(close, rsiLen)
+rsiBullSig = rsiVal > rsiBull
+rsiSig = rsiBullSig ? "BUY" : "SELL"
+
+[_, _, adxVal] = ta.dmi(adxLen, adxLen)
+adxStr = adxVal >= adxReady ? "READY FOR TRADE" : "WAITING FOR TRADE"
+
+vwapVal = ta.vwap(hlc3)
+vwapBull = close > vwapVal
+vwapSig = vwapBull ? "BUY" : "SELL"
+
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, emaSlow))
+htfBull = htfClose > htfEma
+htfSig = htfBull ? "BUY" : "SELL"
+
+[stLine, _] = ta.supertrend(superMult, superPer)
+stBull = close > stLine
+stSig = stBull ? "BUY" : "SELL"
+
+// Count BUY (6 filters)
+buyCnt = (emaBull ? 1 : 0) + (macdBull ? 1 : 0) + (rsiBullSig ? 1 : 0) + (vwapBull ? 1 : 0) + (htfBull ? 1 : 0) + (stBull ? 1 : 0)
+sellCnt = 6 - buyCnt
+totalSig = buyCnt > sellCnt ? "BUY" : (sellCnt > buyCnt ? "SELL" : "NEUTRAL")
+
+// Dashboard Table
+var table dash = table.new(position.top_right, 2, 9, bgcolor=color.new(#1e222d, 85), border_width=1, border_color=color.black)
+if barstate.islast
+    table.cell(dash, 0, 0, "FILTER", text_color=color.rgb(64, 62, 62), bgcolor=color.new(#1e222d, 85))
+    table.cell(dash, 1, 0, "SIGNAL", text_color=color.rgb(64, 62, 62), bgcolor=color.new(#1e222d, 85))
+    
+    table.cell(dash, 0, 1, "1. EMA Trend", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 1, emaSig, text_color=emaBull ? color.rgb(59, 133, 100) : color.red)
+    
+    table.cell(dash, 0, 2, "2. MACD Zero", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 2, macdSigStr, text_color=macdBull ? color.rgb(59, 133, 100) : color.red)
+    
+    table.cell(dash, 0, 3, "3. RSI Momentum", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 3, rsiSig, text_color=rsiBullSig ? color.rgb(59, 133, 100) : color.red)
+    
+    table.cell(dash, 0, 4, "4. ADX Strength", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 4, adxStr, text_color=adxVal >= adxReady ? color.rgb(59, 133, 100) : color.orange)
+    
+    table.cell(dash, 0, 5, "5. VWAP", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 5, vwapSig, text_color=vwapBull ? color.rgb(59, 133, 100) : color.red)
+    
+    table.cell(dash, 0, 6, "6. HTF Structure", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 6, htfSig, text_color=htfBull ? color.rgb(59, 133, 100) : color.red)
+    
+    table.cell(dash, 0, 7, "7. Supertrend", text_color=color.rgb(64, 62, 62))
+    table.cell(dash, 1, 7, stSig, text_color=stBull ? color.rgb(59, 133, 100) : color.red)
+    
+    table.cell(dash, 0, 8, "TOTAL", text_color=color.rgb(64, 62, 62), bgcolor=color.new(#1e222d, 95))
+    table.cell(dash, 1, 8, totalSig, text_color=buyCnt > sellCnt ? color.rgb(59, 133, 100) : color.red)
+
+// Plots
+plot(emaF, color=color.orange, title="EMA Fast")
+plot(emaS, color=color.red, title="EMA Slow")
+plot(vwapVal, color=color.purple, title="VWAP")
+plot(stLine, color=stBull ? color.green : color.red, title="Supertrend", linewidth=2)
