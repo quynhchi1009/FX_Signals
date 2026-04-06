@@ -1,0 +1,171 @@
+//@version=5
+indicator("Session Candles Asia-Europe-US", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+//=============================
+// INPUT
+//=============================
+tz = input.string("UTC-5", "Session Timezone")
+
+showAsia = input.bool(true, "Asia")
+showEur  = input.bool(true, "Europe")
+showUs   = input.bool(true, "US (AM+PM combined)")
+
+asiaSes = input.session("2000-0200", "Asia Session")
+eurSes  = input.session("0200-0830", "Europe Session")
+usSes   = input.session("0830-1600", "US Session")
+
+bullBody = input.color(color.new(color.lime, 70), "Bull Body")
+bearBody = input.color(color.new(color.red, 70), "Bear Body")
+
+bullWick = input.color(color.new(color.lime, 0), "Bull Wick")
+bearWick = input.color(color.new(color.red, 0), "Bear Wick")
+
+bullBorder = input.color(color.new(color.lime, 0), "Bull Border")
+bearBorder = input.color(color.new(color.red, 0), "Bear Border")
+
+asiaTextColor = input.color(color.new(color.fuchsia, 0), "Asia Text")
+eurTextColor  = input.color(color.new(color.aqua, 0), "Europe Text")
+usTextColor   = input.color(color.new(#af9e00, 0), "US Text")
+
+showLabel = input.bool(true, "Show Session Label")
+
+//=============================
+// SESSION FLAGS
+//=============================
+inAsia = not na(time(timeframe.period, asiaSes, tz))
+inEur  = not na(time(timeframe.period, eurSes,  tz))
+inUs   = not na(time(timeframe.period, usSes,   tz))
+
+asiaStart = inAsia and not inAsia[1]
+asiaEnd   = not inAsia and inAsia[1]
+
+eurStart  = inEur and not inEur[1]
+eurEnd    = not inEur and inEur[1]
+
+usStart   = inUs and not inUs[1]
+usEnd     = not inUs and inUs[1]
+
+//=============================
+// DRAW FUNCTION
+//=============================
+drawSessionCandle(_startBar, _endBar, _o, _h, _l, _c, _sessionName, _textColor) =>
+    isBull     = _c >= _o
+    bodyTop    = math.max(_o, _c)
+    bodyBottom = math.min(_o, _c)
+    bodyColor  = isBull ? bullBody : bearBody
+    wickColor  = isBull ? bullWick : bearWick
+    borderColor= isBull ? bullBorder : bearBorder
+    centerX    = int(math.floor((_startBar + _endBar) * 0.5))
+
+    // Body
+    box.new(
+         _startBar, bodyTop, _endBar, bodyBottom,
+         xloc = xloc.bar_index,
+         bgcolor = bodyColor,
+         border_color = borderColor
+     )
+
+    // Upper wick only
+    if _h > bodyTop
+        line.new(
+             centerX, _h,
+             centerX, bodyTop,
+             xloc = xloc.bar_index,
+             color = wickColor,
+             width = 2
+         )
+
+    // Lower wick only
+    if _l < bodyBottom
+        line.new(
+             centerX, bodyBottom,
+             centerX, _l,
+             xloc = xloc.bar_index,
+             color = wickColor,
+             width = 2
+         )
+
+    // Label
+    if showLabel
+        label.new(
+             centerX, _h,
+             _sessionName,
+             xloc = xloc.bar_index,
+             style = label.style_label_down,
+             textcolor = _textColor,
+             color = color.new(color.black, 100),
+             size = size.normal
+         )
+
+//=============================
+// ASIA
+//=============================
+var float asiaO = na
+var float asiaH = na
+var float asiaL = na
+var float asiaC = na
+var int asiaStartBar = na
+
+if asiaStart
+    asiaO := open
+    asiaH := high
+    asiaL := low
+    asiaC := close
+    asiaStartBar := bar_index
+
+if inAsia
+    asiaH := math.max(nz(asiaH, high), high)
+    asiaL := math.min(nz(asiaL, low), low)
+    asiaC := close
+
+if asiaEnd and showAsia and not na(asiaStartBar)
+    drawSessionCandle(asiaStartBar, bar_index - 1, asiaO, asiaH, asiaL, asiaC, "ASIA", asiaTextColor)
+
+//=============================
+// EUROPE
+//=============================
+var float eurO = na
+var float eurH = na
+var float eurL = na
+var float eurC = na
+var int eurStartBar = na
+
+if eurStart
+    eurO := open
+    eurH := high
+    eurL := low
+    eurC := close
+    eurStartBar := bar_index
+
+if inEur
+    eurH := math.max(nz(eurH, high), high)
+    eurL := math.min(nz(eurL, low), low)
+    eurC := close
+
+if eurEnd and showEur and not na(eurStartBar)
+    drawSessionCandle(eurStartBar, bar_index - 1, eurO, eurH, eurL, eurC, "EUROPE", eurTextColor)
+
+//=============================
+// US
+//=============================
+var float usO = na
+var float usH = na
+var float usL = na
+var float usC = na
+var int usStartBar = na
+
+if usStart
+    usO := open
+    usH := high
+    usL := low
+    usC := close
+    usStartBar := bar_index
+
+if inUs
+    usH := math.max(nz(usH, high), high)
+    usL := math.min(nz(usL, low), low)
+    usC := close
+
+if usEnd and showUs and not na(usStartBar)
+    drawSessionCandle(usStartBar, bar_index - 1, usO, usH, usL, usC, "US", usTextColor)
+Đang hiển thị 8654864184138006466.

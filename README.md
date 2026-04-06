@@ -8,11 +8,24 @@ Repository: [github.com/quynhchi1009/FX_Signals](https://github.com/quynhchi1009
 
 | Folder | Contents |
 |--------|----------|
+| [`amd_scalping/`](amd_scalping/) | Session candles indicator for AMD-style intraday structure (v6) |
 | [`engulfing/`](engulfing/) | Engulfing candle **strategy** and **indicator** (v6) |
 | [`casper_smc/`](casper_smc/) | Casper SMC 15m session range + FVG **strategy** and **indicator** (v6) |
 | [`first_candle_value/`](first_candle_value/) | First NY-session **M15** opening range: **strategy** + **indicator** (v6) |
 | [`monday_range/`](monday_range/) | **Monday range** ICT/SMC **strategy** (v5), daily chart |
 | [`trend_filters_dashboard/`](trend_filters_dashboard/) | SMC/ICT **filters dashboard** **indicator** (v5) |
+
+---
+
+## AMD scalping (`amd_scalping/`)
+
+Session-candle visualization indicator for AMD-style intraday context.
+
+| File | Type | Purpose |
+|------|------|---------|
+| [`amd_scalping/sessions_candle_indicator.pine`](amd_scalping/sessions_candle_indicator.pine) | Indicator | Highlights session candles for intraday read and structure mapping |
+
+- Pine **v6**.
 
 ---
 
